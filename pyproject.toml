@@ -1,0 +1,19 @@
+[project]
+name = "moodio"
+version = "0.1.0"
+description = "Personal radio station shaped by taste, live context, and an AI DJ."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "pydantic>=2.10",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28",
+  "pytest>=8.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
