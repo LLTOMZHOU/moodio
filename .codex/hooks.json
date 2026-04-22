@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/request_copilot_review.py\"",
+            "statusMessage": "Requesting Copilot review for new PR"
+          }
+        ]
+      }
+    ]
+  }
+}
