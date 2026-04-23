@@ -1,7 +1,34 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import sqlite3
 from pathlib import Path
+
+
+@dataclass(slots=True, frozen=True)
+class CommandRecord:
+    text: str
+
+
+@dataclass(slots=True, frozen=True)
+class PlayRecord:
+    track_id: str
+    title: str
+
+
+@dataclass(slots=True, frozen=True)
+class TranscriptRecord:
+    segment_id: str
+    text: str
+    start_ms: int
+    duration_ms: int
+
+
+@dataclass(slots=True, frozen=True)
+class StateContext:
+    commands: list[CommandRecord]
+    plays: list[PlayRecord]
+    transcript: list[TranscriptRecord]
 
 
 class StateStore:
@@ -51,7 +78,10 @@ class StateStore:
                 (segment_id, text, start_ms, duration_ms),
             )
 
-    def recent_context(self, limit: int) -> dict:
+    def recent_context(self, limit: int) -> StateContext:
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+
         with self._connect() as conn:
             commands = conn.execute("select text from commands order by id desc limit ?", (limit,)).fetchall()
             plays = conn.execute("select track_id, title from plays order by id desc limit ?", (limit,)).fetchall()
@@ -60,16 +90,16 @@ class StateStore:
                 (limit,),
             ).fetchall()
 
-        return {
-            "commands": [{"text": row[0]} for row in commands],
-            "plays": [{"track_id": row[0], "title": row[1]} for row in plays],
-            "transcript": [
-                {
-                    "segment_id": row[0],
-                    "text": row[1],
-                    "start_ms": row[2],
-                    "duration_ms": row[3],
-                }
+        return StateContext(
+            commands=[CommandRecord(text=row[0]) for row in commands],
+            plays=[PlayRecord(track_id=row[0], title=row[1]) for row in plays],
+            transcript=[
+                TranscriptRecord(
+                    segment_id=row[0],
+                    text=row[1],
+                    start_ms=row[2],
+                    duration_ms=row[3],
+                )
                 for row in transcript
             ],
-        }
+        )
