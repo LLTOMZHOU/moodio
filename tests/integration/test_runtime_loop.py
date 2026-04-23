@@ -1,7 +1,23 @@
+from moodio.station_agent import parse_agent_result
 from moodio.api.schemas import FinalAction
 from moodio.domain.events import RuntimeEvent
 from moodio.domain.models import QueueItem, StationState, TranscriptSegment
 from moodio.executor import execute_action
+from tests.fixtures.fake_model import fake_agent_result
+
+
+def test_station_agent_parses_structured_final_action() -> None:
+    result = parse_agent_result(fake_agent_result())
+
+    assert result.mode == "radio_continue"
+    assert result.say is not None
+    assert result.say.voice == "default_male_1"
+
+
+def test_station_agent_accepts_model_selected_mode_on_soft_turns() -> None:
+    result = parse_agent_result(fake_agent_result(mode="user_request"))
+
+    assert result.mode == "user_request"
 
 
 def test_execute_action_emits_tts_before_queue_update() -> None:

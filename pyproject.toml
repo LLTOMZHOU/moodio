@@ -5,6 +5,7 @@ description = "Personal radio station shaped by taste, live context, and an AI D
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
+  "openai-agents>=0.14.0",
   "pydantic>=2.10",
 ]
 
