@@ -49,3 +49,72 @@ def test_execute_action_emits_tts_before_queue_update() -> None:
     assert station_state.status == "speaking"
     assert station_state.talk_density == "balanced"
     assert station_state.queue[0].track_id == "apple:track:rainy-focus-02"
+
+
+def test_execute_action_with_no_queue_tracks_keeps_station_queue_empty() -> None:
+    action = FinalAction.model_validate(
+        {
+            "mode": "radio_continue",
+            "say": {
+                "text": "Staying with the current track.",
+                "voice": "default_male_1",
+                "interruptible": True,
+            },
+            "queue_tracks": [],
+            "player_actions": [],
+            "talk_density": "balanced",
+        }
+    )
+
+    events: list[RuntimeEvent] = execute_action(action)
+
+    assert [event["event"] for event in events] == [
+        "tts.segment.started",
+        "tts.segment.completed",
+        "station.state.updated",
+    ]
+
+    station_state = StationState.model_validate(events[-1]["payload"])
+    assert station_state.queue == []
+    assert station_state.status == "speaking"
+
+
+def test_execute_action_maps_unknown_track_id_to_deterministic_queue_payload() -> None:
+    action = FinalAction.model_validate(
+        {
+            "mode": "user_request",
+            "say": None,
+            "queue_tracks": [
+                {
+                    "track_id": "apple:track:brand-new-id",
+                    "reason": "requested next",
+                    "start_policy": "immediate",
+                }
+            ],
+            "player_actions": [],
+            "talk_density": None,
+        }
+    )
+
+    events: list[RuntimeEvent] = execute_action(action)
+
+    assert [event["event"] for event in events] == [
+        "queue.updated",
+        "station.state.updated",
+    ]
+
+    queue_item = QueueItem.model_validate(events[0]["payload"]["queue"][0])
+    assert queue_item.model_dump() == {
+        "track_id": "apple:track:brand-new-id",
+        "title": "Brand New Id",
+        "artist": "Moodio Runtime",
+        "album": "Pending Queue",
+        "duration_seconds": 180,
+        "playback_ref": "apple:track:brand-new-id",
+        "artwork_url": "https://example.test/artwork/pending-queue.jpg",
+    }
+
+    station_state = StationState.model_validate(events[1]["payload"])
+    assert station_state.queue[0].model_dump() == queue_item.model_dump()
+    assert station_state.talk_density == "balanced"
+    assert station_state.status == "playing"

@@ -5,45 +5,48 @@ from typing import Any
 from moodio.api.schemas import FinalAction, QueueTrackAction, StreamEvent
 from moodio.domain.events import RuntimeEvent
 from moodio.domain.models import QueueItem, StationState, TranscriptSegment
-from moodio.runtime.in_memory import InMemoryRuntime
 
 
-def _catalog_payloads() -> dict[str, dict[str, Any]]:
-    runtime = InMemoryRuntime()
-    tracks = [runtime.station_state.now_playing, *runtime.station_state.queue]
-    return {track.track_id: track.model_dump() for track in tracks}
+_DEFAULT_NOW_PLAYING = {
+    "track_id": "moodio:track:current",
+    "title": "Current Station Track",
+    "artist": "Moodio Runtime",
+    "album": "Current Playback",
+    "duration_seconds": 240,
+    "playback_ref": "moodio:track:current",
+    "artwork_url": "https://example.test/artwork/current-playback.jpg",
+}
 
 
-def _fallback_queue_payload(track: QueueTrackAction) -> dict[str, Any]:
+def _queue_item_payload(track: QueueTrackAction) -> dict[str, Any]:
     title = track.track_id.rsplit(":", maxsplit=1)[-1].replace("-", " ").title()
     return {
         "track_id": track.track_id,
         "title": title or "Queued Track",
-        "artist": "Unknown Artist",
-        "album": "Runtime Queue",
+        "artist": "Moodio Runtime",
+        "album": "Pending Queue",
         "duration_seconds": 180,
         "playback_ref": track.track_id,
-        "artwork_url": "https://example.test/artwork/runtime-placeholder.jpg",
+        "artwork_url": "https://example.test/artwork/pending-queue.jpg",
     }
 
 
 def _queue_items(queue_tracks: list[QueueTrackAction]) -> list[QueueItem]:
-    catalog = _catalog_payloads()
-    return [
-        QueueItem.model_validate(catalog.get(track.track_id, _fallback_queue_payload(track)))
-        for track in queue_tracks
-    ]
+    return [QueueItem.model_validate(_queue_item_payload(track)) for track in queue_tracks]
 
 
 def _station_state(action: FinalAction, queue: list[QueueItem]) -> StationState:
-    runtime = InMemoryRuntime()
-    runtime.station_state.mode = action.mode
-    runtime.station_state.status = "speaking" if action.say is not None else "playing"
-    if action.talk_density is not None:
-        runtime.station_state.talk_density = action.talk_density
-    if queue:
-        runtime.station_state.queue = queue
-    return runtime.station_state
+    return StationState.model_validate(
+        {
+            "host_name": "moodio",
+            "mode": action.mode,
+            "status": "speaking" if action.say is not None else "playing",
+            "talk_density": action.talk_density or "balanced",
+            "now_playing": _DEFAULT_NOW_PLAYING,
+            "queue": [item.model_dump() for item in queue],
+            "favorites_enabled": True,
+        }
+    )
 
 
 def _event(event: str, payload: dict[str, Any]) -> RuntimeEvent:
