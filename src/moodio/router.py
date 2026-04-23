@@ -5,6 +5,7 @@ from moodio.domain.triggers import PlaybackTrigger, Trigger, UserCommandTrigger
 
 
 def route_trigger(trigger: Trigger, queue_depth: int, provider_error: bool) -> StationMode:
+    del provider_error
     if queue_depth == 0:
         return "recovery"
     if isinstance(trigger, UserCommandTrigger):

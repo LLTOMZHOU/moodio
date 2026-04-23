@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from moodio.domain.models import PlaybackEventType
+
 
 class UserCommandTrigger(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -16,7 +18,7 @@ class PlaybackTrigger(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["playback"] = "playback"
-    event_type: Literal["music.playback.near_end", "music.playback.ended"]
+    event_type: PlaybackEventType
     track_id: str = Field(min_length=1)
     position_seconds: int = Field(ge=0)
     duration_seconds: int = Field(gt=0)

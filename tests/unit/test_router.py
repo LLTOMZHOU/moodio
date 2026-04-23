@@ -25,12 +25,33 @@ def test_route_playback_near_end_to_radio_continue() -> None:
     assert route == "radio_continue"
 
 
+def test_route_playback_ended_falls_back_to_radio_continue() -> None:
+    trigger = PlaybackTrigger(
+        event_type="music.playback.ended",
+        track_id="apple:track:if-bread",
+        position_seconds=197,
+        duration_seconds=197,
+    )
+
+    route = route_trigger(trigger=trigger, queue_depth=1, provider_error=False)
+
+    assert route == "radio_continue"
+
+
 def test_route_empty_queue_to_recovery() -> None:
     trigger = SchedulerTrigger(reason="hourly refresh")
 
     route = route_trigger(trigger=trigger, queue_depth=0, provider_error=False)
 
     assert route == "recovery"
+
+
+def test_scheduler_with_non_empty_queue_uses_radio_continue_fallback() -> None:
+    trigger = SchedulerTrigger(reason="hourly refresh")
+
+    route = route_trigger(trigger=trigger, queue_depth=1, provider_error=False)
+
+    assert route == "radio_continue"
 
 
 def test_empty_queue_takes_precedence_over_user_and_playback_routes() -> None:
