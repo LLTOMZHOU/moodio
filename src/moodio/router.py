@@ -5,7 +5,10 @@ from moodio.domain.triggers import PlaybackTrigger, Trigger, UserCommandTrigger
 
 
 def route_trigger(trigger: Trigger, queue_depth: int, provider_error: bool) -> StationMode:
-    del provider_error
+    """Route Task 1 triggers deterministically.
+
+    `provider_error` is reserved for a later slice and does not affect Task 1 routing yet.
+    """
     if queue_depth == 0:
         return "recovery"
     if isinstance(trigger, UserCommandTrigger):

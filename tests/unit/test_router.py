@@ -54,6 +54,14 @@ def test_scheduler_with_non_empty_queue_uses_radio_continue_fallback() -> None:
     assert route == "radio_continue"
 
 
+def test_provider_error_does_not_change_task_one_routing() -> None:
+    trigger = UserCommandTrigger(text="play something warmer")
+
+    route = route_trigger(trigger=trigger, queue_depth=1, provider_error=True)
+
+    assert route == "user_request"
+
+
 def test_empty_queue_takes_precedence_over_user_and_playback_routes() -> None:
     user_route = route_trigger(
         trigger=UserCommandTrigger(text="play something warmer"),
