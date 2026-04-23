@@ -10,6 +10,7 @@ def fake_environment_snapshot() -> dict:
 
 
 def fake_recent_context() -> StateContext:
+    # Kept for Task 3 spec parity; the regression test now uses a real StateStore snapshot.
     track = sample_track()
     transcript = sample_transcript_segment()
 

@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 
+from moodio.state_store import StateContext
+
 
 def build_context_payload(
     mode: str,
     trigger: dict,
     user_corpus: dict,
     environment: dict,
-    recent_context: dict,
+    recent_context: StateContext | dict,
     scheduler_payload: dict | None,
 ) -> dict:
     if is_dataclass(recent_context):
