@@ -1,4 +1,5 @@
 from moodio.api.schemas import FinalAction
+from moodio.domain.events import RuntimeEvent
 from moodio.domain.models import QueueItem, StationState, TranscriptSegment
 from moodio.executor import execute_action
 
@@ -24,7 +25,7 @@ def test_execute_action_emits_tts_before_queue_update() -> None:
         }
     )
 
-    events = execute_action(action)
+    events: list[RuntimeEvent] = execute_action(action)
 
     assert [event["event"] for event in events] == [
         "tts.segment.started",

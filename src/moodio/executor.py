@@ -3,11 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from moodio.api.schemas import FinalAction, QueueTrackAction, StreamEvent
+from moodio.domain.events import RuntimeEvent
 from moodio.domain.models import QueueItem, StationState, TranscriptSegment
 from moodio.runtime.in_memory import InMemoryRuntime
-
-
-RuntimeEvent = dict[str, Any]
 
 
 def _catalog_payloads() -> dict[str, dict[str, Any]]:
