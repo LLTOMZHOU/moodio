@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from moodio.domain.events import RuntimeEventName
 from moodio.domain.models import PlaybackEvent, StationState, TalkDensity
 
 
@@ -65,19 +66,7 @@ class FinalAction(BaseModel):
 class StreamEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    event: Literal[
-        "music.playback.started",
-        "music.playback.progress",
-        "music.playback.near_end",
-        "music.playback.ended",
-        "music.playback.paused",
-        "music.playback.resumed",
-        "tts.segment.started",
-        "tts.segment.completed",
-        "station.state.updated",
-        "queue.updated",
-        "favorites.updated",
-    ]
+    event: RuntimeEventName
     payload: Any
 
 
