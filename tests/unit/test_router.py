@@ -31,3 +31,24 @@ def test_route_empty_queue_to_recovery() -> None:
     route = route_trigger(trigger=trigger, queue_depth=0, provider_error=False)
 
     assert route == "recovery"
+
+
+def test_empty_queue_takes_precedence_over_user_and_playback_routes() -> None:
+    user_route = route_trigger(
+        trigger=UserCommandTrigger(text="play something warmer"),
+        queue_depth=0,
+        provider_error=False,
+    )
+    playback_route = route_trigger(
+        trigger=PlaybackTrigger(
+            event_type="music.playback.near_end",
+            track_id="apple:track:if-bread",
+            position_seconds=182,
+            duration_seconds=197,
+        ),
+        queue_depth=0,
+        provider_error=False,
+    )
+
+    assert user_route == "recovery"
+    assert playback_route == "recovery"
