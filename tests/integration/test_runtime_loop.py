@@ -240,15 +240,39 @@ def test_runtime_service_command_recovery_fallback_skips_tts_and_keeps_music_upd
             }
         )
 
+    def fake_runtime_event_executor(action: FinalAction) -> list[RuntimeEvent]:
+        return execute_action(action, tts_should_fail=True)
+
     runtime = RuntimeService(
         state_store=StateStore(tmp_path / "moodio.db"),
         station_turn_runner=fake_run_station_turn,
-        tts_should_fail=True,
+        runtime_event_executor=fake_runtime_event_executor,
     )
 
-    asyncio.run(runtime.accept_command(CommandRequest(text="recover")))
+    before_transcript = runtime.state_store.recent_context(limit=5).transcript
 
+    async def run_command_and_collect_events() -> list[dict]:
+        subscriber = await runtime.subscribe()
+        try:
+            await runtime.accept_command(CommandRequest(text="recover"))
+            events: list[dict] = []
+            while not subscriber.empty():
+                events.append(subscriber.get_nowait())
+            return events
+        finally:
+            runtime.unsubscribe(subscriber)
+
+    events = asyncio.run(run_command_and_collect_events())
+    after_transcript = runtime.state_store.recent_context(limit=5).transcript
+
+    assert [event["event"] for event in events] == [
+        "queue.updated",
+        "station.state.updated",
+    ]
     assert [segment.segment_id for segment in runtime.transcript_segments] == ["seg_001"]
+    assert [(item.segment_id, item.text) for item in after_transcript] == [
+        (item.segment_id, item.text) for item in before_transcript
+    ]
     assert runtime.station_state.mode == "recovery"
     assert runtime.station_state.status == "playing"
     assert runtime.station_state.queue[0].track_id == "apple:track:rainy-focus-02"
