@@ -8,7 +8,7 @@
 
 ## Goal
 
-Build `moodio`, a personal AI radio / voice DJ system that follows the layered station idea already captured in the repo docs, but replaces the `claude -p` subprocess with an explicit OpenAI Agents SDK harness.
+Build `moodio`, a personal AI radio / voice DJ system that follows the layered station idea already captured in the repo docs, but replaces the `claude -p` subprocess with the latest compatible OpenAI Agents SDK as the base harness.
 
 The important shift is:
 
@@ -18,12 +18,13 @@ The important shift is:
 
 ## Core Decision
 
-Use the Agents SDK as the turn orchestrator, not as the whole product.
+Use the latest compatible OpenAI Agents SDK as the base harness and turn orchestrator, not as the whole product.
 
 That means:
 
 - the app owns state, scheduling, APIs, and device integration
 - the agent owns reasoning over the current turn and deciding which tools to call
+- the SDK's tool, prompt, and hook surfaces are the first place to extend runtime behavior
 - the final model output must be a strict action object that the app can execute safely
 
 This is a better fit than a `claude -p` wrapper because the harness becomes explicit and portable.
@@ -244,15 +245,15 @@ These modules preserve the intended station runtime structure, but the model-fac
 
 ### `router.py`
 
-Classifies the incoming trigger into one of a few run modes:
+Acts as a thin hard-edge gate before the model runs.
 
-- `chat`
-- `radio_continue`
-- `playlist_build`
-- `recovery`
-- `manual_control`
+It should stay deterministic code and only own cases where the app should not spend time asking the model what to do, for example:
 
-The router should be deterministic code first, not an agent. Use explicit heuristics before invoking the model.
+- direct transport and favorite actions
+- empty queue or explicit recovery conditions
+- obvious playback lifecycle hooks that should immediately continue the station loop
+
+For everything else, the router should not try to fully classify the user intent itself. It should hand the turn to the station agent, which can cheaply decide the mode and final action through structured output.
 
 ### `context_builder.py`
 
@@ -342,15 +343,16 @@ A run begins from one of these triggers:
 
 For each trigger:
 
-1. `router.py` chooses a run mode.
-2. `context_builder.py` assembles the current prompt payload.
-3. The app invokes `Runner.run()` or `Runner.run_streamed()` with the station agent.
-4. The agent may call tools.
-5. Tool results are appended into the run.
-6. The agent must end with a final action object.
-7. The executor validates and applies the action object.
-8. State is persisted.
-9. UI and audio state are updated.
+1. `router.py` checks whether the trigger is a hard deterministic case.
+2. If yes, the app runs the deterministic path immediately.
+3. Otherwise, `context_builder.py` assembles the current prompt payload.
+4. The app invokes `Runner.run()` or `Runner.run_streamed()` with the station agent.
+5. The agent may call tools.
+6. Tool results are appended into the run.
+7. The agent must end with a final action object that includes the chosen mode.
+8. The executor validates and applies the action object.
+9. State is persisted.
+10. UI and audio state are updated.
 
 This matches the Agents SDK loop directly:
 
@@ -358,6 +360,15 @@ This matches the Agents SDK loop directly:
 - tool calls
 - rerun
 - final output
+
+If needed for latency, the app can add a lightweight first-pass model classification for non-hard-edge triggers:
+
+- no tools
+- tiny prompt
+- strict enum output
+- low token budget
+
+But that should still be treated as part of the model path, not as a large deterministic router.
 
 ### Final action contract
 
@@ -571,12 +582,20 @@ music_agent/
 
 ## Agents SDK Integration
 
-Use the SDK as the runtime loop, not as a replacement for app architecture.
+Use the latest compatible OpenAI Agents SDK release as the runtime loop and base harness, not as a replacement for app architecture.
+
+The implementation stance is:
+
+- start from the SDK's built-in agent loop rather than building a custom harness first
+- add app-owned tools, prompts, hooks, and strict output schemas on top of that base
+- keep long-lived state, scheduling, playback policy, and persistence in app code
+- upgrade the SDK deliberately as part of normal dependency maintenance instead of pinning the design to one old release
 
 ### Primary use
 
 - `Agent(...)` for the station brain
 - `function_tool` wrappers for app capabilities
+- prompt and hook surfaces for run-time instrumentation, guardrails, and traceability
 - `Runner.run_streamed(...)` for interactive runs
 - `Runner.run(...)` for scheduler/background turns
 
@@ -640,7 +659,7 @@ Favorites should be available both as a direct UI action and as a model-callable
 
 The app is not one generic chatbot. Preserve that.
 
-Define explicit run modes:
+Define explicit run modes, but let the model choose between the editorial modes on non-hard-edge turns:
 
 ### `radio_continue`
 

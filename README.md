@@ -5,6 +5,12 @@
 - [UI_DESIGN_PROMPT.md](/Users/yuxingzhou/Local_Projects/music_agent/UI_DESIGN_PROMPT.md)
 - [TEST_PLAN.md](/Users/yuxingzhou/Local_Projects/music_agent/TEST_PLAN.md)
 
+## Current Direction
+
+The implementation baseline for `moodio` is the latest compatible OpenAI Agents SDK release as the base harness.
+
+That means this repo is intended to layer app-owned tools, prompts, hooks, state, and execution policy on top of the SDK rather than building a bespoke agent loop first.
+
 ## Development Setup
 
 This repo currently uses a local Python virtual environment in `.venv/`.

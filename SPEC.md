@@ -22,6 +22,11 @@ Product defaults:
 - host name: `moodio`
 - default voice: male
 
+Implementation note:
+
+- use the latest compatible OpenAI Agents SDK release as the base harness
+- extend it with app-owned tools, prompts, hooks, and strict action contracts
+
 ## Product Principles
 
 - Broadcast, not chatbot: the default mode is an ongoing station flow.

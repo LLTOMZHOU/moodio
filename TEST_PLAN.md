@@ -9,6 +9,7 @@ This document is the operating contract for implementation work:
 - product behavior comes from `SPEC.md`
 - system structure comes from `ARCHITECTURE.md`
 - implementation should advance through failing tests, minimal code, review, and then expansion
+- the latest compatible OpenAI Agents SDK release is the base harness under test, with app-owned tools, prompts, hooks, and executor logic layered around it
 
 ## TDD Working Rules
 
@@ -24,6 +25,7 @@ Rules:
 
 - no silent product behavior changes without tests
 - no provider-dependent logic in unit tests
+- no reimplementation of the SDK loop in tests when a fake around our SDK integration seam is enough
 - no "we will test this later" for core contracts
 - every bug fix starts with a reproducer test
 - every schema change requires contract tests
@@ -82,7 +84,7 @@ The rule is:
 
 The test suite should prove:
 
-- the station chooses the right run mode for a trigger
+- the hard deterministic routing edges behave correctly
 - context assembly is predictable and bounded
 - agent output is validated before side effects occur
 - side effects are executed in the right order
@@ -135,7 +137,7 @@ Run several modules together with fake adapters.
 
 Targets:
 
-- trigger -> router -> context builder -> fake station agent -> executor
+- trigger -> hard-edge router -> context builder -> fake station agent -> executor
 - executor -> TTS adapter -> transcript events
 - executor -> playback adapter -> queue state changes
 - scheduler trigger -> station response
@@ -356,15 +358,15 @@ Done means:
 
 Write tests first for:
 
-- command trigger classification
-- scheduled trigger classification
-- playback-ended classification
-- recovery fallback routing
+- direct deterministic actions
+- empty-queue recovery routing
+- obvious playback lifecycle gating
+- pass-through behavior for non-hard-edge turns
 
 Done means:
 
-- routing is deterministic
-- no model call is required for basic routing
+- the hard-edge gate is deterministic
+- the model is only skipped for the explicit hard-edge cases
 
 ### Slice 4: state store
 
@@ -397,6 +399,7 @@ Write tests first for:
 
 Write tests first for:
 
+- lightweight mode classification on non-hard-edge turns
 - fake tool call loop
 - final action extraction
 - malformed model output recovery
