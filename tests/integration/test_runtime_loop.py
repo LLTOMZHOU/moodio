@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from moodio.api.schemas import FinalAction
 from moodio.domain.events import RuntimeEvent
-from moodio.domain.models import QueueItem, StationState, TranscriptSegment
+from moodio.domain.models import QueueItem, STATION_PLACEHOLDER_TRACK_ID, StationState, TranscriptSegment
 from moodio.executor import execute_action
 from moodio.station_agent import run_station_turn
 from tests.fixtures.fake_model import fake_agent_result
@@ -105,6 +105,7 @@ def test_execute_action_emits_tts_before_queue_update() -> None:
     assert station_state.mode == "radio_continue"
     assert station_state.status == "speaking"
     assert station_state.talk_density == "balanced"
+    assert station_state.now_playing.track_id == STATION_PLACEHOLDER_TRACK_ID
     assert station_state.queue[0].track_id == "apple:track:rainy-focus-02"
 
 

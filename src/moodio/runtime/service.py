@@ -17,14 +17,12 @@ from moodio.api.schemas import (
 )
 from moodio.context_builder import build_context_payload
 from moodio.domain.events import RuntimeEvent
-from moodio.domain.models import QueueItem, StationState, TranscriptSegment
+from moodio.domain.models import QueueItem, STATION_PLACEHOLDER_TRACK_ID, StationState, TranscriptSegment
 from moodio.domain.triggers import UserCommandTrigger
 from moodio.executor import execute_action
 from moodio.router import route_trigger
 from moodio.state_store import StateStore
 from moodio.station_agent import run_station_turn
-
-_SYNTHETIC_NOW_PLAYING_TRACK_ID = "moodio:track:current"
 
 
 def _seed_now_playing() -> QueueItem:
@@ -157,7 +155,7 @@ class RuntimeService:
         return AcceptedResponse(accepted=True, kind="natural_language", text=request.text)
 
     def _sync_persisted_play_context(self) -> None:
-        if self.station_state.now_playing.track_id != _SYNTHETIC_NOW_PLAYING_TRACK_ID:
+        if self.station_state.now_playing.track_id != STATION_PLACEHOLDER_TRACK_ID:
             self._record_play_if_new(self.station_state.now_playing)
         for queued_track in self.station_state.queue:
             self._record_play_if_new(queued_track)

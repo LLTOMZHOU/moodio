@@ -4,16 +4,16 @@ from typing import Any
 
 from moodio.api.schemas import FinalAction, QueueTrackAction, StreamEvent
 from moodio.domain.events import RuntimeEvent
-from moodio.domain.models import QueueItem, StationState, TranscriptSegment
+from moodio.domain.models import QueueItem, STATION_PLACEHOLDER_TRACK_ID, StationState, TranscriptSegment
 
 
 _DEFAULT_NOW_PLAYING = {
-    "track_id": "moodio:track:current",
+    "track_id": STATION_PLACEHOLDER_TRACK_ID,
     "title": "Current Station Track",
     "artist": "Moodio Runtime",
     "album": "Current Playback",
     "duration_seconds": 240,
-    "playback_ref": "moodio:track:current",
+    "playback_ref": STATION_PLACEHOLDER_TRACK_ID,
     "artwork_url": "https://example.test/artwork/current-playback.jpg",
 }
 

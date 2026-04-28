@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+STATION_PLACEHOLDER_TRACK_ID = "moodio:track:current"
+
 
 StationMode = Literal["radio_continue", "user_request", "recovery", "chat", "playlist_build", "manual_control"]
 StationStatus = Literal["idle", "thinking", "speaking", "playing", "recovering", "offline"]
