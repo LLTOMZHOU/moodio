@@ -210,6 +210,19 @@ class RuntimeService:
             "queue": [track.model_dump() for track in self.station_state.queue],
         }
 
+    async def queue_track(self, track: QueueItem) -> dict:
+        self.station_state.queue.insert(0, track)
+        self._record_play_if_new(track)
+
+        queue_payload = {"queue": [item.model_dump() for item in self.station_state.queue]}
+        await self.broadcast("queue.updated", queue_payload)
+        await self.broadcast("station.state.updated", self.station_state.model_dump())
+
+        return {
+            "accepted": True,
+            "queue": queue_payload["queue"],
+        }
+
     async def previous_track(self) -> dict:
         if self._previous_tracks:
             previous = self._previous_tracks.pop()

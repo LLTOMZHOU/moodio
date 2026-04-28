@@ -1,0 +1,2 @@
+"""Music provider integration boundaries."""
+

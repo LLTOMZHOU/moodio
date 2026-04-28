@@ -32,3 +32,18 @@ Run the backend test suite with:
 ```bash
 .venv/bin/pytest -q
 ```
+
+## Headless CLI
+
+The local package installs a `moodio` command for running the backend without a browser UI:
+
+```bash
+.venv/bin/moodio now
+.venv/bin/moodio transcript
+.venv/bin/moodio command "play something warmer"
+.venv/bin/moodio search "of monsters and men"
+.venv/bin/moodio queue soundcloud:track:123
+.venv/bin/moodio serve --host 127.0.0.1 --port 8765
+```
+
+`moodio search` and `moodio queue` currently use the SoundCloud provider adapter. Set either `SOUNDCLOUD_CLIENT_ID` or `SOUNDCLOUD_OAUTH_TOKEN` before using live SoundCloud API calls.
