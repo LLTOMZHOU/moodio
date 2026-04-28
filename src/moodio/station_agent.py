@@ -23,4 +23,4 @@ def parse_agent_result(payload: dict) -> FinalAction:
 
 async def run_station_turn(input_payload: dict) -> FinalAction:
     result = await Runner.run(build_station_agent(), input=input_payload)
-    return FinalAction.model_validate(result.final_output)
+    return parse_agent_result(result.final_output)

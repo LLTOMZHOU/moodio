@@ -40,6 +40,27 @@ def test_station_agent_accepts_model_selected_mode_on_soft_turns(monkeypatch) ->
     assert result.mode == "user_request"
 
 
+def test_station_agent_delegates_result_parsing(monkeypatch) -> None:
+    payload = fake_agent_result(mode="user_request")
+    expected = FinalAction.model_validate(fake_agent_result(mode="recovery"))
+    seen: dict[str, object] = {}
+
+    async def fake_run(agent, input):
+        return SimpleNamespace(final_output=payload)
+
+    def fake_parse_agent_result(raw_payload):
+        seen["payload"] = raw_payload
+        return expected
+
+    monkeypatch.setattr("moodio.station_agent.Runner.run", fake_run)
+    monkeypatch.setattr("moodio.station_agent.parse_agent_result", fake_parse_agent_result)
+
+    result = asyncio.run(run_station_turn({"turn_id": "soft-turn-3"}))
+
+    assert seen["payload"] == payload
+    assert result is expected
+
+
 def test_execute_action_emits_tts_before_queue_update() -> None:
     action = FinalAction.model_validate(
         {
