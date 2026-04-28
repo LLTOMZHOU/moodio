@@ -137,6 +137,11 @@ def test_post_command_updates_persisted_play_context_for_next_turn(tmp_path) -> 
 
     first_response = client.post("/api/command", json={"text": "play something warmer"})
     assert first_response.status_code == 202
+    first_recent_context = runtime.state_store.recent_context(limit=5)
+    assert [play.track_id for play in first_recent_context.plays] == [
+        "apple:track:cozy-synth-01",
+        "apple:track:if-bread",
+    ]
 
     second_response = client.post("/api/command", json={"text": "keep it flowing"})
     assert second_response.status_code == 202

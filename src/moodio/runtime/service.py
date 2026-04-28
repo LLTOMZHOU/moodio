@@ -24,6 +24,8 @@ from moodio.router import route_trigger
 from moodio.state_store import StateStore
 from moodio.station_agent import run_station_turn
 
+_SYNTHETIC_NOW_PLAYING_TRACK_ID = "moodio:track:current"
+
 
 def _seed_now_playing() -> QueueItem:
     return QueueItem.model_validate(
@@ -155,7 +157,8 @@ class RuntimeService:
         return AcceptedResponse(accepted=True, kind="natural_language", text=request.text)
 
     def _sync_persisted_play_context(self) -> None:
-        self._record_play_if_new(self.station_state.now_playing)
+        if self.station_state.now_playing.track_id != _SYNTHETIC_NOW_PLAYING_TRACK_ID:
+            self._record_play_if_new(self.station_state.now_playing)
         for queued_track in self.station_state.queue:
             self._record_play_if_new(queued_track)
 
