@@ -104,7 +104,7 @@ def _print_json(payload: Any, stdout: TextIO) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="moodio")
+    parser = argparse.ArgumentParser(prog="moodie")
     subcommands = parser.add_subparsers(dest="command_name", required=True)
 
     serve = subcommands.add_parser("serve", help="Run the moodio HTTP server")

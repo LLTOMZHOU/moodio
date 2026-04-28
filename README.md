@@ -35,15 +35,15 @@ Run the backend test suite with:
 
 ## Headless CLI
 
-The local package installs a `moodio` command for running the backend without a browser UI:
+The local package installs a `moodie` command for running the backend without a browser UI:
 
 ```bash
-.venv/bin/moodio now
-.venv/bin/moodio transcript
-.venv/bin/moodio command "play something warmer"
-.venv/bin/moodio search "of monsters and men"
-.venv/bin/moodio queue soundcloud:track:123
-.venv/bin/moodio serve --host 127.0.0.1 --port 8765
+moodie now
+moodie transcript
+moodie command "play something warmer"
+moodie search "of monsters and men"
+moodie queue soundcloud:track:123
+moodie serve --host 127.0.0.1 --port 8765
 ```
 
-`moodio search` and `moodio queue` currently use the SoundCloud provider adapter. Set either `SOUNDCLOUD_CLIENT_ID` or `SOUNDCLOUD_OAUTH_TOKEN` before using live SoundCloud API calls.
+`moodie search` and `moodie queue` currently use the SoundCloud provider adapter. Set either `SOUNDCLOUD_CLIENT_ID` or `SOUNDCLOUD_OAUTH_TOKEN` before using live SoundCloud API calls.

@@ -5,6 +5,9 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
+
+import pytest
 
 from moodio.api.schemas import FinalAction
 from moodio.cli import run
@@ -135,3 +138,18 @@ def test_cli_module_entrypoint_runs_command() -> None:
 
     assert result.returncode == 0
     assert json.loads(result.stdout)["host_name"] == "moodio"
+
+
+def test_package_exposes_moodie_console_script() -> None:
+    with open("pyproject.toml", "rb") as pyproject_file:
+        pyproject = tomllib.load(pyproject_file)
+
+    assert pyproject["project"]["scripts"]["moodie"] == "moodio.cli:main"
+
+
+def test_cli_help_uses_moodie_program_name(capsys) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        run(["--help"])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.startswith("usage: moodie ")
