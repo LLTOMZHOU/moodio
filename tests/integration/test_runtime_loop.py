@@ -1,21 +1,41 @@
-from moodio.station_agent import parse_agent_result
+import asyncio
+from types import SimpleNamespace
+
 from moodio.api.schemas import FinalAction
 from moodio.domain.events import RuntimeEvent
 from moodio.domain.models import QueueItem, StationState, TranscriptSegment
 from moodio.executor import execute_action
+from moodio.station_agent import run_station_turn
 from tests.fixtures.fake_model import fake_agent_result
 
 
-def test_station_agent_parses_structured_final_action() -> None:
-    result = parse_agent_result(fake_agent_result())
+def test_station_agent_runs_structured_final_action_through_runner(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def fake_run(agent, input):
+        seen["agent"] = agent
+        seen["input"] = input
+        return SimpleNamespace(final_output=fake_agent_result())
+
+    monkeypatch.setattr("moodio.station_agent.Runner.run", fake_run)
+
+    result = asyncio.run(run_station_turn({"turn_id": "soft-turn-1"}))
 
     assert result.mode == "radio_continue"
     assert result.say is not None
     assert result.say.voice == "default_male_1"
+    assert seen["input"] == {"turn_id": "soft-turn-1"}
+    assert seen["agent"].output_type is FinalAction
+    assert seen["agent"].tools == []
 
 
-def test_station_agent_accepts_model_selected_mode_on_soft_turns() -> None:
-    result = parse_agent_result(fake_agent_result(mode="user_request"))
+def test_station_agent_accepts_model_selected_mode_on_soft_turns(monkeypatch) -> None:
+    async def fake_run(agent, input):
+        return SimpleNamespace(final_output=fake_agent_result(mode="user_request"))
+
+    monkeypatch.setattr("moodio.station_agent.Runner.run", fake_run)
+
+    result = asyncio.run(run_station_turn({"turn_id": "soft-turn-2"}))
 
     assert result.mode == "user_request"
 

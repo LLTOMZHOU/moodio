@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-from agents import Agent, Runner, function_tool
+from agents import Agent, Runner
 
 from moodio.api.schemas import FinalAction
 
 
 def build_station_agent() -> Agent:
-    @function_tool
-    def read_queue() -> dict:
-        return {"queue_depth": 1}
-
     return Agent(
         name="moodio",
         instructions=(
@@ -17,7 +13,6 @@ def build_station_agent() -> Agent:
             "When the app sends you a non-hard-edge turn, choose the correct mode "
             "and return a strict FinalAction."
         ),
-        tools=[read_queue],
         output_type=FinalAction,
     )
 
