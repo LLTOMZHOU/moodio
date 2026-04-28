@@ -72,6 +72,7 @@ class RuntimeService:
         *,
         state_store: StateStore | None = None,
         station_turn_runner: Callable[[dict], Awaitable[FinalAction]] | None = None,
+        tts_should_fail: bool = False,
     ) -> None:
         self._temp_dir: TemporaryDirectory[str] | None = None
         if state_store is None:
@@ -80,6 +81,7 @@ class RuntimeService:
 
         self.state_store = state_store
         self._station_turn_runner = station_turn_runner or run_station_turn
+        self._tts_should_fail = tts_should_fail
         self.station_state = StationState.model_validate(
             {
                 "host_name": "moodio",
@@ -148,7 +150,7 @@ class RuntimeService:
             scheduler_payload=None,
         )
         final_action = await self._station_turn_runner(context_payload)
-        runtime_events = execute_action(final_action)
+        runtime_events = execute_action(final_action, tts_should_fail=self._tts_should_fail)
         await self._apply_runtime_events(runtime_events)
         self._sync_persisted_play_context()
 

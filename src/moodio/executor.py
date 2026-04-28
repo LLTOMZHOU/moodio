@@ -35,12 +35,12 @@ def _queue_items(queue_tracks: list[QueueTrackAction]) -> list[QueueItem]:
     return [QueueItem.model_validate(_queue_item_payload(track)) for track in queue_tracks]
 
 
-def _station_state(action: FinalAction, queue: list[QueueItem]) -> StationState:
+def _station_state(action: FinalAction, queue: list[QueueItem], *, is_speaking: bool) -> StationState:
     return StationState.model_validate(
         {
             "host_name": "moodio",
             "mode": action.mode,
-            "status": "speaking" if action.say is not None else "playing",
+            "status": "speaking" if is_speaking else "playing",
             "talk_density": action.talk_density or "balanced",
             "now_playing": _DEFAULT_NOW_PLAYING,
             "queue": [item.model_dump() for item in queue],
@@ -53,12 +53,13 @@ def _event(event: str, payload: dict[str, Any]) -> RuntimeEvent:
     return StreamEvent.model_validate({"event": event, "payload": payload}).model_dump()
 
 
-def execute_action(action: FinalAction) -> list[RuntimeEvent]:
+def execute_action(action: FinalAction, tts_should_fail: bool = False) -> list[RuntimeEvent]:
     events: list[RuntimeEvent] = []
     queue = _queue_items(action.queue_tracks)
-    station_state = _station_state(action, queue)
+    should_emit_tts = action.say is not None and not tts_should_fail
+    station_state = _station_state(action, queue, is_speaking=should_emit_tts)
 
-    if action.say is not None:
+    if should_emit_tts:
         segment_payload = TranscriptSegment.model_validate(
             {
                 "segment_id": "seg_runtime_001",

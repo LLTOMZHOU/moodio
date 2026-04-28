@@ -1,10 +1,12 @@
 import asyncio
 from types import SimpleNamespace
 
-from moodio.api.schemas import FinalAction
+from moodio.api.schemas import CommandRequest, FinalAction
 from moodio.domain.events import RuntimeEvent
 from moodio.domain.models import QueueItem, STATION_PLACEHOLDER_TRACK_ID, StationState, TranscriptSegment
 from moodio.executor import execute_action
+from moodio.runtime.service import RuntimeService
+from moodio.state_store import StateStore
 from moodio.station_agent import run_station_turn
 from tests.fixtures.fake_model import fake_agent_result
 
@@ -176,3 +178,77 @@ def test_execute_action_maps_unknown_track_id_to_deterministic_queue_payload() -
     assert station_state.queue[0].model_dump() == queue_item.model_dump()
     assert station_state.talk_density == "balanced"
     assert station_state.status == "playing"
+
+
+def test_execute_action_handles_tts_failure_with_music_only_fallback() -> None:
+    action = FinalAction.model_validate(
+        {
+            "mode": "recovery",
+            "say": {
+                "text": "Fallback line.",
+                "voice": "default_male_1",
+                "interruptible": True,
+            },
+            "queue_tracks": [
+                {
+                    "track_id": "apple:track:rainy-focus-02",
+                    "reason": "safe fallback",
+                    "start_policy": "immediate",
+                }
+            ],
+            "player_actions": [],
+            "talk_density": "low",
+        }
+    )
+
+    events: list[RuntimeEvent] = execute_action(action, tts_should_fail=True)
+
+    assert [event["event"] for event in events] == [
+        "queue.updated",
+        "station.state.updated",
+    ]
+
+    queue_item = QueueItem.model_validate(events[0]["payload"]["queue"][0])
+    assert queue_item.track_id == "apple:track:rainy-focus-02"
+
+    station_state = StationState.model_validate(events[1]["payload"])
+    assert station_state.mode == "recovery"
+    assert station_state.status == "playing"
+    assert station_state.talk_density == "low"
+    assert station_state.queue[0].track_id == "apple:track:rainy-focus-02"
+
+
+def test_runtime_service_command_recovery_fallback_skips_tts_and_keeps_music_update(tmp_path) -> None:
+    async def fake_run_station_turn(_: dict) -> FinalAction:
+        return FinalAction.model_validate(
+            {
+                "mode": "recovery",
+                "say": {
+                    "text": "Fallback line.",
+                    "voice": "default_male_1",
+                    "interruptible": True,
+                },
+                "queue_tracks": [
+                    {
+                        "track_id": "apple:track:rainy-focus-02",
+                        "reason": "safe fallback",
+                        "start_policy": "immediate",
+                    }
+                ],
+                "player_actions": [],
+                "talk_density": "low",
+            }
+        )
+
+    runtime = RuntimeService(
+        state_store=StateStore(tmp_path / "moodio.db"),
+        station_turn_runner=fake_run_station_turn,
+        tts_should_fail=True,
+    )
+
+    asyncio.run(runtime.accept_command(CommandRequest(text="recover")))
+
+    assert [segment.segment_id for segment in runtime.transcript_segments] == ["seg_001"]
+    assert runtime.station_state.mode == "recovery"
+    assert runtime.station_state.status == "playing"
+    assert runtime.station_state.queue[0].track_id == "apple:track:rainy-focus-02"
