@@ -33,6 +33,20 @@ Run the backend test suite with:
 .venv/bin/pytest -q
 ```
 
+## Local Environment
+
+Use the repo-local `.env` file for model and provider keys so this checkout does not accidentally inherit unrelated keys from `~/.zshrc`.
+
+For OpenRouter-backed station commands:
+
+```bash
+OPENROUTER_API_KEY=
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=
+```
+
+When `OPENROUTER_API_KEY` is set, the station agent uses the OpenAI Agents SDK with OpenRouter's OpenAI-compatible Chat Completions endpoint.
+
 ## Headless CLI
 
 The local package installs a `moodie` command for running the backend without a browser UI:

@@ -7,16 +7,17 @@ from moodio.domain.models import QueueItem, STATION_PLACEHOLDER_TRACK_ID, Statio
 from moodio.executor import execute_action
 from moodio.runtime.service import RuntimeService
 from moodio.state_store import StateStore
-from moodio.station_agent import run_station_turn
+from moodio.station_agent import build_model_config, load_local_env, run_station_turn
 from tests.fixtures.fake_model import fake_agent_result
 
 
 def test_station_agent_runs_structured_final_action_through_runner(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
-    async def fake_run(agent, input):
+    async def fake_run(agent, input, *, run_config=None):
         seen["agent"] = agent
         seen["input"] = input
+        seen["run_config"] = run_config
         return SimpleNamespace(final_output=fake_agent_result())
 
     monkeypatch.setattr("moodio.station_agent.Runner.run", fake_run)
@@ -29,10 +30,11 @@ def test_station_agent_runs_structured_final_action_through_runner(monkeypatch) 
     assert seen["input"] == {"turn_id": "soft-turn-1"}
     assert seen["agent"].output_type is FinalAction
     assert seen["agent"].tools == []
+    assert seen["run_config"] is None
 
 
 def test_station_agent_accepts_model_selected_mode_on_soft_turns(monkeypatch) -> None:
-    async def fake_run(agent, input):
+    async def fake_run(agent, input, *, run_config=None):
         return SimpleNamespace(final_output=fake_agent_result(mode="user_request"))
 
     monkeypatch.setattr("moodio.station_agent.Runner.run", fake_run)
@@ -47,7 +49,7 @@ def test_station_agent_delegates_result_parsing(monkeypatch) -> None:
     expected = FinalAction.model_validate(fake_agent_result(mode="recovery"))
     seen: dict[str, object] = {}
 
-    async def fake_run(agent, input):
+    async def fake_run(agent, input, *, run_config=None):
         return SimpleNamespace(final_output=payload)
 
     def fake_parse_agent_result(raw_payload):
@@ -61,6 +63,58 @@ def test_station_agent_delegates_result_parsing(monkeypatch) -> None:
 
     assert seen["payload"] == payload
     assert result is expected
+
+
+def test_load_local_env_reads_repo_local_env_without_overriding_shell_values(tmp_path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "OPENROUTER_API_KEY=local-key\n"
+        "OPENROUTER_MODEL=openai/gpt-4o-mini\n"
+        "OPENAI_API_KEY=local-openai-key\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "shell-openai-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+
+    loaded = load_local_env(env_file)
+
+    assert loaded == {
+        "OPENROUTER_API_KEY": "local-key",
+        "OPENROUTER_MODEL": "openai/gpt-4o-mini",
+    }
+    assert "OPENAI_API_KEY" not in loaded
+
+
+def test_build_model_config_prefers_openrouter_and_chat_completions(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+    run_config = build_model_config()
+
+    assert run_config is not None
+    assert run_config.model == "openai/gpt-4o-mini"
+    assert run_config.model_provider._stored_base_url == "https://openrouter.ai/api/v1"
+    assert run_config.model_provider._use_responses is False
+
+
+def test_station_agent_passes_openrouter_run_config(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def fake_run(agent, input, *, run_config=None):
+        seen["run_config"] = run_config
+        return SimpleNamespace(final_output=fake_agent_result())
+
+    monkeypatch.setattr("moodio.station_agent.Runner.run", fake_run)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+
+    result = asyncio.run(run_station_turn({"turn_id": "soft-turn-openrouter"}))
+
+    assert result.mode == "radio_continue"
+    assert seen["run_config"] is not None
+    assert seen["run_config"].model == "openai/gpt-4o-mini"
 
 
 def test_execute_action_emits_tts_before_queue_update() -> None:
