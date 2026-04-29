@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 from moodio.api.schemas import CommandRequest, FinalAction
@@ -21,13 +22,14 @@ def test_station_agent_runs_structured_final_action_through_runner(monkeypatch) 
         return SimpleNamespace(final_output=fake_agent_result())
 
     monkeypatch.setattr("moodio.station_agent.Runner.run", fake_run)
+    monkeypatch.setattr("moodio.station_agent.build_model_config", lambda: None)
 
     result = asyncio.run(run_station_turn({"turn_id": "soft-turn-1"}))
 
     assert result.mode == "radio_continue"
     assert result.say is not None
     assert result.say.voice == "default_male_1"
-    assert seen["input"] == {"turn_id": "soft-turn-1"}
+    assert json.loads(seen["input"]) == {"turn_id": "soft-turn-1"}
     assert seen["agent"].output_type is FinalAction
     assert seen["agent"].tools == []
     assert seen["run_config"] is None
@@ -38,6 +40,7 @@ def test_station_agent_accepts_model_selected_mode_on_soft_turns(monkeypatch) ->
         return SimpleNamespace(final_output=fake_agent_result(mode="user_request"))
 
     monkeypatch.setattr("moodio.station_agent.Runner.run", fake_run)
+    monkeypatch.setattr("moodio.station_agent.build_model_config", lambda: None)
 
     result = asyncio.run(run_station_turn({"turn_id": "soft-turn-2"}))
 
@@ -58,6 +61,7 @@ def test_station_agent_delegates_result_parsing(monkeypatch) -> None:
 
     monkeypatch.setattr("moodio.station_agent.Runner.run", fake_run)
     monkeypatch.setattr("moodio.station_agent.parse_agent_result", fake_parse_agent_result)
+    monkeypatch.setattr("moodio.station_agent.build_model_config", lambda: None)
 
     result = asyncio.run(run_station_turn({"turn_id": "soft-turn-3"}))
 
@@ -115,6 +119,23 @@ def test_station_agent_passes_openrouter_run_config(monkeypatch) -> None:
     assert result.mode == "radio_continue"
     assert seen["run_config"] is not None
     assert seen["run_config"].model == "openai/gpt-4o-mini"
+
+
+def test_station_agent_times_out_slow_model_calls(monkeypatch) -> None:
+    async def slow_run(agent, input, *, run_config=None):
+        await asyncio.sleep(0.1)
+        return SimpleNamespace(final_output=fake_agent_result())
+
+    monkeypatch.setattr("moodio.station_agent.Runner.run", slow_run)
+    monkeypatch.setattr("moodio.station_agent.build_model_config", lambda: None)
+    monkeypatch.setenv("MOODIO_AGENT_TIMEOUT_SECONDS", "0.01")
+
+    try:
+        asyncio.run(run_station_turn({"turn_id": "slow-turn"}))
+    except TimeoutError as exc:
+        assert "timed out" in str(exc)
+    else:
+        raise AssertionError("expected station turn to time out")
 
 
 def test_execute_action_emits_tts_before_queue_update() -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -15,6 +17,7 @@ _LOCAL_ENV_KEYS = {
     "OPENROUTER_MODEL",
 }
 _DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_DEFAULT_AGENT_TIMEOUT_SECONDS = 45.0
 
 
 def build_station_agent() -> Agent:
@@ -76,5 +79,13 @@ def build_model_config() -> RunConfig | None:
 
 
 async def run_station_turn(input_payload: dict) -> FinalAction:
-    result = await Runner.run(build_station_agent(), input=input_payload, run_config=build_model_config())
+    model_input = json.dumps(input_payload, sort_keys=True)
+    timeout_seconds = float(os.environ.get("MOODIO_AGENT_TIMEOUT_SECONDS", _DEFAULT_AGENT_TIMEOUT_SECONDS))
+    try:
+        result = await asyncio.wait_for(
+            Runner.run(build_station_agent(), input=model_input, run_config=build_model_config()),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError as exc:
+        raise TimeoutError(f"station agent turn timed out after {timeout_seconds:g}s") from exc
     return parse_agent_result(result.final_output)
