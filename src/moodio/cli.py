@@ -85,6 +85,10 @@ async def _run_async(
         provider = provider_factory()
         provider_track = await provider.resolve_track(provider_track_id)
         _print_json(await runtime.queue_track(provider_track.to_queue_item()), stdout)
+    elif args.command_name == "embed":
+        provider = provider_factory()
+        provider_track = await provider.resolve_embed_url(args.soundcloud_url)
+        _print_json(await runtime.queue_track(provider_track.to_queue_item()), stdout)
     else:
         raise ValueError(f"unsupported command: {args.command_name}")
 
@@ -125,6 +129,9 @@ def _parser() -> argparse.ArgumentParser:
 
     queue = subcommands.add_parser("queue", help="Queue a provider track ref as the next track")
     queue.add_argument("track_ref")
+
+    embed = subcommands.add_parser("embed", help="Queue a SoundCloud URL through the embeddable player path")
+    embed.add_argument("soundcloud_url")
 
     favorite = subcommands.add_parser("favorite", help="Favorite a track id")
     favorite.add_argument("track_id")

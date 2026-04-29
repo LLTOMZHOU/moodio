@@ -35,7 +35,7 @@ def test_provider_track_converts_to_stable_queue_item() -> None:
     assert queue_item.playback_ref == "soundcloud:track:123"
 
 
-def test_soundcloud_provider_maps_search_results_to_provider_tracks() -> None:
+def test_soundcloud_provider_resolves_embed_url_without_api_credentials() -> None:
     seen: dict[str, object] = {}
 
     async def fake_fetch_json(url: str, *, params: dict, headers: dict) -> object:
@@ -43,39 +43,30 @@ def test_soundcloud_provider_maps_search_results_to_provider_tracks() -> None:
         seen["params"] = params
         seen["headers"] = headers
         return {
-            "collection": [
-                {
-                    "id": 123,
-                    "title": "The Actor",
-                    "duration": 211_000,
-                    "artwork_url": "https://i1.sndcdn.com/artworks-actor-large.jpg",
-                    "permalink_url": "https://soundcloud.com/ofmonstersandmen/the-actor",
-                    "stream_url": "https://api.soundcloud.com/tracks/123/stream",
-                    "user": {
-                        "username": "Of Monsters and Men",
-                        "permalink_url": "https://soundcloud.com/ofmonstersandmen",
-                    },
-                }
-            ]
+            "provider_name": "SoundCloud",
+            "title": "The Actor by Of Monsters and Men",
+            "thumbnail_url": "https://i1.sndcdn.com/artworks-actor-large.jpg",
+            "html": '<iframe src="https://w.soundcloud.com/player/?url=https%3A//api.soundcloud.com/tracks/123"></iframe>',
         }
 
-    provider = SoundCloudProvider(
-        client_id="client-123",
-        fetch_json=fake_fetch_json,
-        api_base_url="https://api.soundcloud.test",
-    )
+    provider = SoundCloudProvider(fetch_json=fake_fetch_json, oembed_url="https://soundcloud.test/oembed")
 
-    tracks = asyncio.run(provider.search_tracks("of monsters and men", limit=3))
+    track = asyncio.run(provider.resolve_embed_url("https://soundcloud.com/ofmonstersandmen/the-actor"))
 
-    assert seen["url"] == "https://api.soundcloud.test/tracks"
-    assert seen["params"] == {"q": "of monsters and men", "limit": 3, "client_id": "client-123"}
-    assert tracks[0].provider == "soundcloud"
-    assert tracks[0].provider_track_id == "123"
-    assert tracks[0].title == "The Actor"
-    assert tracks[0].artist == "Of Monsters and Men"
-    assert tracks[0].duration_seconds == 211
-    assert tracks[0].playback_ref == "soundcloud:track:123"
-    assert tracks[0].attribution == {
+    assert seen["url"] == "https://soundcloud.test/oembed"
+    assert seen["params"] == {
+        "format": "json",
+        "url": "https://soundcloud.com/ofmonstersandmen/the-actor",
+    }
+    assert seen["headers"] == {}
+    assert track.provider == "soundcloud"
+    assert track.provider_track_id == "https://soundcloud.com/ofmonstersandmen/the-actor"
+    assert track.title == "The Actor"
+    assert track.artist == "Of Monsters and Men"
+    assert track.duration_seconds == 1
+    assert track.playback_ref == "soundcloud:embed:https://soundcloud.com/ofmonstersandmen/the-actor"
+    assert track.embed_html == '<iframe src="https://w.soundcloud.com/player/?url=https%3A//api.soundcloud.com/tracks/123"></iframe>'
+    assert track.attribution == {
         "source": "SoundCloud",
         "creator": "Of Monsters and Men",
         "external_url": "https://soundcloud.com/ofmonstersandmen/the-actor",

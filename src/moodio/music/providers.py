@@ -25,6 +25,7 @@ class ProviderTrack(BaseModel):
     playback_ref: str = Field(min_length=1)
     external_url: str | None = None
     stream_url: str | None = None
+    embed_html: str | None = None
     attribution: dict[str, str] = Field(default_factory=dict)
 
     def to_queue_item(self) -> QueueItem:

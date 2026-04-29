@@ -33,11 +33,13 @@ class SoundCloudProvider:
         oauth_token: str | None = None,
         fetch_json: FetchJson | None = None,
         api_base_url: str = "https://api.soundcloud.com",
+        oembed_url: str = "https://soundcloud.com/oembed",
     ) -> None:
         self.client_id = client_id
         self.oauth_token = oauth_token
         self._fetch_json = fetch_json or _default_fetch_json
         self.api_base_url = api_base_url.rstrip("/")
+        self.oembed_url = oembed_url
 
     async def search_tracks(self, query: str, limit: int = 10) -> list[ProviderTrack]:
         params: dict[str, object] = {"q": query, "limit": limit}
@@ -58,6 +60,16 @@ class SoundCloudProvider:
         if not isinstance(payload, dict):
             raise ValueError("SoundCloud track response must be an object")
         return _track_from_payload(payload)
+
+    async def resolve_embed_url(self, soundcloud_url: str) -> ProviderTrack:
+        payload = await self._fetch_json(
+            self.oembed_url,
+            params={"format": "json", "url": soundcloud_url},
+            headers={},
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("SoundCloud oEmbed response must be an object")
+        return _track_from_oembed(soundcloud_url, payload)
 
     async def queue_payload(self, track: ProviderTrack) -> QueueItem:
         return track.to_queue_item()
@@ -104,3 +116,34 @@ def _track_from_payload(payload: dict[str, Any]) -> ProviderTrack:
             "external_url": str(external_url or user.get("permalink_url") or ""),
         },
     )
+
+
+def _track_from_oembed(soundcloud_url: str, payload: dict[str, Any]) -> ProviderTrack:
+    title = str(payload.get("title") or "SoundCloud Track")
+    track_title, artist = _split_title_and_artist(title)
+
+    return ProviderTrack(
+        provider="soundcloud",
+        provider_track_id=soundcloud_url,
+        title=track_title,
+        artist=artist,
+        album=None,
+        duration_seconds=1,
+        artwork_url=payload.get("thumbnail_url"),
+        playback_ref=f"soundcloud:embed:{soundcloud_url}",
+        external_url=soundcloud_url,
+        stream_url=None,
+        embed_html=payload.get("html"),
+        attribution={
+            "source": "SoundCloud",
+            "creator": artist,
+            "external_url": soundcloud_url,
+        },
+    )
+
+
+def _split_title_and_artist(title: str) -> tuple[str, str]:
+    if " by " in title:
+        track_title, artist = title.rsplit(" by ", maxsplit=1)
+        return track_title.strip() or title, artist.strip() or "SoundCloud"
+    return title, "SoundCloud"

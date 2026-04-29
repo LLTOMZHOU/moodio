@@ -41,9 +41,17 @@ The local package installs a `moodie` command for running the backend without a 
 moodie now
 moodie transcript
 moodie command "play something warmer"
-moodie search "of monsters and men"
-moodie queue soundcloud:track:123
+moodie embed "https://soundcloud.com/ofmonstersandmen/the-actor"
 moodie serve --host 127.0.0.1 --port 8765
 ```
 
-`moodie search` and `moodie queue` currently use the SoundCloud provider adapter. Set either `SOUNDCLOUD_CLIENT_ID` or `SOUNDCLOUD_OAUTH_TOKEN` before using live SoundCloud API calls.
+SoundCloud embed URLs are the primary playback path. `moodie embed` uses SoundCloud oEmbed and does not need SoundCloud API credentials for public embeddable tracks.
+
+Credentialed SoundCloud API search remains available as an optional path:
+
+```bash
+moodie search "of monsters and men"
+moodie queue soundcloud:track:123
+```
+
+Set either `SOUNDCLOUD_CLIENT_ID` or `SOUNDCLOUD_OAUTH_TOKEN` before using live SoundCloud API calls.

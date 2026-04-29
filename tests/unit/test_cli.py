@@ -96,6 +96,48 @@ def test_cli_queue_resolves_provider_track_and_updates_runtime(tmp_path) -> None
     assert runtime.station_state.queue[0].track_id == "soundcloud:track:123"
 
 
+def test_cli_embed_resolves_soundcloud_url_and_updates_runtime(tmp_path) -> None:
+    runtime = _runtime(tmp_path)
+    soundcloud_url = "https://soundcloud.com/ofmonstersandmen/the-actor"
+
+    class FakeProvider:
+        async def resolve_embed_url(self, url: str) -> ProviderTrack:
+            assert url == soundcloud_url
+            return ProviderTrack(
+                provider="soundcloud",
+                provider_track_id=url,
+                title="The Actor",
+                artist="Of Monsters and Men",
+                album=None,
+                duration_seconds=1,
+                artwork_url="https://i1.sndcdn.com/artworks-actor.jpg",
+                playback_ref=f"soundcloud:embed:{url}",
+                external_url=url,
+                stream_url=None,
+                embed_html="<iframe></iframe>",
+                attribution={
+                    "source": "SoundCloud",
+                    "creator": "Of Monsters and Men",
+                    "external_url": url,
+                },
+            )
+
+    stdout = io.StringIO()
+
+    exit_code = run(
+        ["embed", soundcloud_url],
+        runtime_factory=lambda: runtime,
+        provider_factory=lambda: FakeProvider(),
+        stdout=stdout,
+    )
+
+    assert exit_code == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["accepted"] is True
+    assert payload["queue"][0]["track_id"] == f"soundcloud:embed:{soundcloud_url}"
+    assert runtime.station_state.queue[0].playback_ref == f"soundcloud:embed:{soundcloud_url}"
+
+
 def test_cli_command_runs_runtime_command_path(tmp_path) -> None:
     async def fake_station_turn(_: dict) -> FinalAction:
         return FinalAction.model_validate(
