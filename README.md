@@ -42,7 +42,17 @@ For OpenRouter-backed station commands:
 ```bash
 OPENROUTER_API_KEY=
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_MODEL=
+OPENROUTER_MODEL=openai/gpt-5.4-mini
+MOODIO_AGENT_TIMEOUT_SECONDS=45
+```
+
+For future OpenAI TTS/STT:
+
+```bash
+OPENAI_TTS_MODEL=gpt-4o-mini-tts
+OPENAI_TTS_VOICE=cedar
+OPENAI_TTS_RESPONSE_FORMAT=mp3
+OPENAI_STT_MODEL=gpt-4o-mini-transcribe
 ```
 
 When `OPENROUTER_API_KEY` is set, the station agent uses the OpenAI Agents SDK with OpenRouter's OpenAI-compatible Chat Completions endpoint.
