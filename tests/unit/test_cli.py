@@ -9,9 +9,9 @@ import tomllib
 
 import pytest
 
-from moodio.api.schemas import FinalAction
 from moodio.cli import run
 from moodio.music.providers import ProviderTrack
+from moodio.runtime.control import StationControl
 from moodio.runtime.service import RuntimeService
 from moodio.state_store import StateStore
 
@@ -139,16 +139,9 @@ def test_cli_embed_resolves_soundcloud_url_and_updates_runtime(tmp_path) -> None
 
 
 def test_cli_command_runs_runtime_command_path(tmp_path) -> None:
-    async def fake_station_turn(_: dict) -> FinalAction:
-        return FinalAction.model_validate(
-            {
-                "mode": "user_request",
-                "say": None,
-                "queue_tracks": [],
-                "player_actions": [],
-                "talk_density": "low",
-            }
-        )
+    async def fake_station_turn(_: dict, control: StationControl) -> str:
+        await control.set_talk_density("low")
+        return "Keeping it warm."
 
     runtime = RuntimeService(
         state_store=StateStore(tmp_path / "moodio.db"),
@@ -165,6 +158,29 @@ def test_cli_command_runs_runtime_command_path(tmp_path) -> None:
         "kind": "natural_language",
         "text": "play something warmer",
     }
+
+
+def test_cli_transcribe_prints_text_from_audio_file(tmp_path) -> None:
+    audio_file = tmp_path / "command.wav"
+    audio_file.write_bytes(b"audio-bytes")
+
+    class FakeTranscriber:
+        def transcribe(self, audio: bytes, *, filename: str, content_type: str) -> str:
+            assert audio == b"audio-bytes"
+            assert filename == "command.wav"
+            assert content_type == "audio/wav"
+            return "play something warmer"
+
+    runtime = RuntimeService(
+        state_store=StateStore(tmp_path / "moodio.db"),
+        speech_transcriber=FakeTranscriber(),
+    )
+    stdout = io.StringIO()
+
+    exit_code = run(["transcribe", str(audio_file)], runtime_factory=lambda: runtime, stdout=stdout)
+
+    assert exit_code == 0
+    assert json.loads(stdout.getvalue()) == {"text": "play something warmer"}
 
 
 def test_cli_module_entrypoint_runs_command() -> None:

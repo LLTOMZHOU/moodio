@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from moodio.api.schemas import FinalAction
 from moodio.api.server import create_app
+from moodio.runtime.control import StationControl
 from moodio.runtime.service import RuntimeService
 from moodio.state_store import StateStore
 
@@ -34,28 +34,13 @@ def test_get_current_transcript_returns_current_segment_list() -> None:
 
 def test_post_command_runs_full_runtime_loop(tmp_path) -> None:
     seen_payloads: list[dict] = []
+    seen_controls: list[StationControl] = []
 
-    async def fake_run_station_turn(input_payload: dict) -> FinalAction:
+    async def fake_run_station_turn(input_payload: dict, control: StationControl) -> str:
         seen_payloads.append(input_payload)
-        return FinalAction.model_validate(
-            {
-                "mode": "user_request",
-                "say": {
-                    "text": "Let me warm things up a touch.",
-                    "voice": "default_male_1",
-                    "interruptible": True,
-                },
-                "queue_tracks": [
-                    {
-                        "track_id": "apple:track:cozy-synth-01",
-                        "reason": "warmer follow-up",
-                        "start_policy": "after_tts",
-                    }
-                ],
-                "player_actions": [],
-                "talk_density": "low",
-            }
-        )
+        seen_controls.append(control)
+        await control.set_talk_density("low")
+        return "Let me warm things up a touch."
 
     runtime = RuntimeService(
         state_store=StateStore(tmp_path / "moodio.db"),
@@ -72,6 +57,7 @@ def test_post_command_runs_full_runtime_loop(tmp_path) -> None:
     assert payload["kind"] == "natural_language"
     assert payload["text"] == "play something warmer"
     assert len(seen_payloads) == 1
+    assert seen_controls[0].runtime is runtime
     input_payload = seen_payloads[0]
     assert input_payload["mode"] == "user_request"
     assert input_payload["context"]["latest_input"] == {
@@ -90,7 +76,6 @@ def test_post_command_runs_full_runtime_loop(tmp_path) -> None:
     assert now_payload["mode"] == "user_request"
     assert now_payload["status"] == "speaking"
     assert now_payload["talk_density"] == "low"
-    assert now_payload["queue"][0]["track_id"] == "apple:track:cozy-synth-01"
 
     transcript_response = client.get("/api/transcript/current")
     transcript_payload = transcript_response.json()
@@ -100,34 +85,13 @@ def test_post_command_runs_full_runtime_loop(tmp_path) -> None:
 def test_post_command_updates_persisted_play_context_for_next_turn(tmp_path) -> None:
     seen_payloads: list[dict] = []
 
-    async def fake_run_station_turn(input_payload: dict) -> FinalAction:
+    async def fake_run_station_turn(input_payload: dict, control: StationControl) -> str:
         seen_payloads.append(input_payload)
         if len(seen_payloads) == 1:
-            return FinalAction.model_validate(
-                {
-                    "mode": "user_request",
-                    "say": None,
-                    "queue_tracks": [
-                        {
-                            "track_id": "apple:track:cozy-synth-01",
-                            "reason": "warmer follow-up",
-                            "start_policy": "after_tts",
-                        }
-                    ],
-                    "player_actions": [],
-                    "talk_density": "low",
-                }
-            )
+            await control.next_track()
+            return "Moving to the warmer follow-up."
 
-        return FinalAction.model_validate(
-            {
-                "mode": "radio_continue",
-                "say": None,
-                "queue_tracks": [],
-                "player_actions": [],
-                "talk_density": "balanced",
-            }
-        )
+        return "Keeping it flowing."
 
     runtime = RuntimeService(
         state_store=StateStore(tmp_path / "moodio.db"),
@@ -138,17 +102,14 @@ def test_post_command_updates_persisted_play_context_for_next_turn(tmp_path) -> 
     first_response = client.post("/api/command", json={"text": "play something warmer"})
     assert first_response.status_code == 202
     first_recent_context = runtime.state_store.recent_context(limit=5)
-    assert [play.track_id for play in first_recent_context.plays] == [
-        "apple:track:cozy-synth-01",
-        "apple:track:if-bread",
-    ]
+    assert first_recent_context.plays[0].track_id == "apple:track:rainy-focus-02"
 
     second_response = client.post("/api/command", json={"text": "keep it flowing"})
     assert second_response.status_code == 202
 
     second_persisted_memory = seen_payloads[1]["context"]["persisted_memory"]
     assert second_persisted_memory["commands"][0]["text"] == "keep it flowing"
-    assert second_persisted_memory["plays"][0]["track_id"] == "apple:track:cozy-synth-01"
+    assert second_persisted_memory["plays"][0]["track_id"] == "apple:track:rainy-focus-02"
 
 def test_post_next_advances_queue_and_returns_current_track() -> None:
     client = TestClient(create_app())
@@ -226,3 +187,27 @@ def test_post_playback_event_accepts_near_end_signal_from_frontend() -> None:
     payload = response.json()
     assert payload["accepted"] is True
     assert payload["kind"] == "playback_event"
+
+
+def test_post_transcribe_returns_text_from_audio_body(tmp_path) -> None:
+    class FakeTranscriber:
+        def transcribe(self, audio: bytes, *, filename: str, content_type: str) -> str:
+            assert audio == b"audio-bytes"
+            assert filename == "command.wav"
+            assert content_type == "audio/wav"
+            return "play something warmer"
+
+    runtime = RuntimeService(
+        state_store=StateStore(tmp_path / "moodio.db"),
+        speech_transcriber=FakeTranscriber(),
+    )
+    client = TestClient(create_app(runtime=runtime))
+
+    response = client.post(
+        "/api/transcribe?filename=command.wav",
+        content=b"audio-bytes",
+        headers={"content-type": "audio/wav"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"text": "play something warmer"}

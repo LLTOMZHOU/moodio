@@ -46,9 +46,10 @@ OPENROUTER_MODEL=openai/gpt-5.4-mini
 MOODIO_AGENT_TIMEOUT_SECONDS=45
 ```
 
-For future OpenAI TTS/STT:
+For OpenAI TTS/STT:
 
 ```bash
+OPENAI_API_KEY=
 OPENAI_TTS_MODEL=gpt-4o-mini-tts
 OPENAI_TTS_VOICE=cedar
 OPENAI_TTS_RESPONSE_FORMAT=mp3
@@ -56,6 +57,8 @@ OPENAI_STT_MODEL=gpt-4o-mini-transcribe
 ```
 
 When `OPENROUTER_API_KEY` is set, the station agent uses the OpenAI Agents SDK with OpenRouter's OpenAI-compatible Chat Completions endpoint.
+When `OPENAI_API_KEY` is set, `moodie serve` and default CLI/runtime construction enable OpenAI TTS and STT adapters. Without it, station turns still produce transcript text, but `/api/transcribe` and `moodie transcribe` require an injected or configured transcriber.
+The default runtime also exposes credential-free read tools for DuckDuckGo-backed web search and Open-Meteo weather snapshots.
 
 ## Headless CLI
 
@@ -65,8 +68,17 @@ The local package installs a `moodie` command for running the backend without a 
 moodie now
 moodie transcript
 moodie command "play something warmer"
+moodie transcribe ./command.wav
 moodie embed "https://soundcloud.com/ofmonstersandmen/the-actor"
 moodie serve --host 127.0.0.1 --port 8765
+```
+
+The HTTP server also exposes raw-audio transcription for a future press-to-talk UI:
+
+```bash
+curl -X POST --data-binary @command.wav \
+  -H 'content-type: audio/wav' \
+  'http://127.0.0.1:8765/api/transcribe?filename=command.wav'
 ```
 
 SoundCloud embed URLs are the primary playback path. `moodie embed` uses SoundCloud oEmbed and does not need SoundCloud API credentials for public embeddable tracks.

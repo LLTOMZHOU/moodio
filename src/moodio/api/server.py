@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 
 from moodio.api.schemas import CommandRequest, FavoriteRequest, PlaybackEventRequest
-from moodio.runtime.service import RuntimeService
+from moodio.runtime.service import RuntimeService, build_runtime_from_env
 
 
 def create_app(runtime: RuntimeService | None = None) -> FastAPI:
     app = FastAPI()
-    app.state.runtime = runtime or RuntimeService()
+    app.state.runtime = runtime or build_runtime_from_env()
 
     @app.get("/api/now")
     async def get_now() -> dict:
@@ -54,6 +54,15 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
     async def post_playback_event(request: PlaybackEventRequest) -> dict:
         runtime: RuntimeService = app.state.runtime
         return (await runtime.ingest_playback_event(request)).model_dump()
+
+    @app.post("/api/transcribe")
+    async def post_transcribe(request: Request, filename: str = "audio.webm") -> dict:
+        runtime: RuntimeService = app.state.runtime
+        return runtime.transcribe_audio(
+            await request.body(),
+            filename=filename,
+            content_type=request.headers.get("content-type", "application/octet-stream"),
+        )
 
     @app.websocket("/api/stream")
     async def stream_events(websocket: WebSocket) -> None:

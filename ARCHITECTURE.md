@@ -25,7 +25,7 @@ That means:
 - the app owns state, scheduling, APIs, and device integration
 - the agent owns reasoning over the current turn and deciding which tools to call
 - the SDK's tool, prompt, and hook surfaces are the first place to extend runtime behavior
-- the final model output must be a strict action object that the app can execute safely
+- the final model output is the short spoken DJ line; app state changes happen through typed tools
 
 This is a better fit than a `claude -p` wrapper because the harness becomes explicit and portable.
 
@@ -73,10 +73,12 @@ These should be treated as durable editorial inputs, not ephemeral chat history.
 
 Initial target:
 
-- NetEase Cloud Music search / metadata / lyric / recommendation access
+- SoundCloud embed playback through oEmbed
+- provider adapters for future NetEase, Audius, or other music APIs
 
 Expose them through app-owned tool wrappers such as:
 
+- `queue_soundcloud_embed(url)`
 - `search_tracks(query, mood, limit)`
 - `get_track_details(track_id)`
 - `get_recommendations(seed_track_ids, mood, limit)`
@@ -253,7 +255,7 @@ It should stay deterministic code and only own cases where the app should not sp
 - empty queue or explicit recovery conditions
 - obvious playback lifecycle hooks that should immediately continue the station loop
 
-For everything else, the router should not try to fully classify the user intent itself. It should hand the turn to the station agent, which can cheaply decide the mode and final action through structured output.
+For everything else, the router should not try to fully classify the user intent itself. It should hand the turn to the station agent and let the model decide which app tools to call.
 
 ### `context_builder.py`
 
@@ -279,7 +281,7 @@ Defines the main agent:
 
 - instructions: act like the station brain / DJ
 - tools: only app-owned tools
-- output type: strict final action schema
+- output type: plain text, intended for TTS
 
 This agent is the runtime "brain" module, implemented as an SDK `Agent`.
 
@@ -349,8 +351,8 @@ For each trigger:
 4. The app invokes `Runner.run()` or `Runner.run_streamed()` with the station agent.
 5. The agent may call tools.
 6. Tool results are appended into the run.
-7. The agent must end with a final action object that includes the chosen mode.
-8. The executor validates and applies the action object.
+7. The agent ends with a concise spoken line for TTS.
+8. App tools have already applied any requested state changes.
 9. State is persisted.
 10. UI and audio state are updated.
 
@@ -370,54 +372,26 @@ If needed for latency, the app can add a lightweight first-pass model classifica
 
 But that should still be treated as part of the model path, not as a large deterministic router.
 
-### Final action contract
+### Final response contract
 
-Do not let the agent free-form its last answer.
+Do not use the agent's final response as an executable action object.
 
-Require a strict structured output, for example:
+The current contract is:
 
-```json
-{
-  "mode": "radio_continue",
-  "say": {
-    "text": "Short spoken transition for the listener",
-    "voice": "default_male_1",
-    "interruptible": true
-  },
-  "queue_tracks": [
-    {
-      "track_id": "ncm:123",
-      "reason": "Fits rainy focused afternoon mood",
-      "start_policy": "after_tts"
-    }
-  ],
-  "ui": {
-    "headline": "Rainy Focus",
-    "notes": "Lean instrumental for the next 20 minutes"
-  },
-  "memory_write": {
-    "mood": "focused",
-    "summary": "User wanted calmer background music for work"
-  },
-  "follow_up": {
-    "type": "timer",
-    "seconds": 1800,
-    "reason": "Reassess mood after work block settles"
-  }
-}
-```
+- model-callable tools inspect and mutate app state
+- direct UI actions call the same runtime operations where possible
+- the final model output is only the short spoken line that the app can send to TTS
+- risky state changes belong behind typed app tools, not in free-form text parsing
 
-The executor layer should reject malformed or unsafe actions.
-
-The executor should also enforce product pacing rules:
+Tool implementations should enforce product pacing and safety rules:
 
 - between-track speech should usually stay under 20 seconds
 - overlong speech should be clipped or rejected before synthesis
 
-The final action contract should distinguish between:
+Tool boundaries should distinguish between:
 
 - deterministic player actions such as `next`, `pause`, `resume`, `favorite`
-- agent-authored actions such as `say`, `queue_tracks`, `talk_density`, `memory_write`
+- agent-requested state changes such as `queue_track`, `set_talk_density`, and `save_memory_note`
 
 ### Agent structure
 
@@ -521,6 +495,7 @@ Even for a local-first app, define an internal event shape early:
 - `user.transport_action.received`
 - `scheduler.triggered`
 - `tts.segment.started`
+- `tts.audio.ready`
 - `tts.segment.completed`
 - `music.playback.started`
 - `music.playback.near_end`
@@ -587,7 +562,7 @@ Use the latest compatible OpenAI Agents SDK release as the runtime loop and base
 The implementation stance is:
 
 - start from the SDK's built-in agent loop rather than building a custom harness first
-- add app-owned tools, prompts, hooks, and strict output schemas on top of that base
+- add app-owned tools, prompts, hooks, and typed tool boundaries on top of that base
 - keep long-lived state, scheduling, playback policy, and persistence in app code
 - upgrade the SDK deliberately as part of normal dependency maintenance instead of pinning the design to one old release
 
@@ -633,6 +608,7 @@ Split them into:
 Safe informational tools:
 
 - `read_current_weather`
+- `web_search`
 - `read_recent_plays`
 - `read_taste_profile`
 - `search_tracks`
@@ -798,7 +774,7 @@ The first shippable version should be intentionally small.
 
 ## Suggested Build Order
 
-1. Define domain models and final action schema.
+1. Define domain models and typed app-control tools.
 2. Implement SQLite store and event log.
 3. Implement read-only tools: taste, recent plays, weather, music search.
 4. Implement `StationAgent` with mock playback executor.
@@ -820,6 +796,6 @@ This design preserves the original idea:
 The only major replacement is the "brain" box:
 
 - before: local `claude -p` subprocess with hidden harness behavior
-- now: explicit agent runtime with owned tools, owned state, and strict output
+- now: explicit agent runtime with owned tools, owned state, and plain spoken output
 
 That is the right replacement if the goal is to understand and control the system rather than wrap somebody else's CLI.

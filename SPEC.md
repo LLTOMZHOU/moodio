@@ -25,7 +25,7 @@ Product defaults:
 Implementation note:
 
 - use the latest compatible OpenAI Agents SDK release as the base harness
-- extend it with app-owned tools, prompts, hooks, and strict action contracts
+- extend it with app-owned tools, prompts, hooks, and typed app-control boundaries
 
 ## Product Principles
 

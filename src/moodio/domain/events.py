@@ -11,6 +11,7 @@ RuntimeEventName = Literal[
     "music.playback.paused",
     "music.playback.resumed",
     "tts.segment.started",
+    "tts.audio.ready",
     "tts.segment.completed",
     "station.state.updated",
     "queue.updated",

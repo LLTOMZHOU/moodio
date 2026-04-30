@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import mimetypes
 import os
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, TextIO
 
 import uvicorn
@@ -13,7 +15,7 @@ import uvicorn
 from moodio.api.schemas import CommandRequest, FavoriteRequest
 from moodio.music.providers import MusicProvider
 from moodio.music.soundcloud import SoundCloudProvider
-from moodio.runtime.service import RuntimeService
+from moodio.runtime.service import RuntimeService, build_runtime_from_env
 
 
 def default_music_provider() -> MusicProvider:
@@ -26,7 +28,7 @@ def default_music_provider() -> MusicProvider:
 def run(
     argv: list[str] | None = None,
     *,
-    runtime_factory: Callable[[], RuntimeService] = RuntimeService,
+    runtime_factory: Callable[[], RuntimeService] = build_runtime_from_env,
     provider_factory: Callable[[], MusicProvider] = default_music_provider,
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
@@ -71,6 +73,16 @@ async def _run_async(
     elif args.command_name == "command":
         response = await runtime.accept_command(CommandRequest(text=args.text))
         _print_json(response.model_dump(), stdout)
+    elif args.command_name == "transcribe":
+        audio_path = args.audio_file
+        _print_json(
+            runtime.transcribe_audio(
+                audio_path.read_bytes(),
+                filename=audio_path.name,
+                content_type=_audio_content_type(audio_path),
+            ),
+            stdout,
+        )
     elif args.command_name == "next":
         _print_json(await runtime.next_track(), stdout)
     elif args.command_name == "previous":
@@ -107,6 +119,13 @@ def _print_json(payload: Any, stdout: TextIO) -> None:
     stdout.write("\n")
 
 
+def _audio_content_type(path: Path) -> str:
+    guessed = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    if guessed == "audio/x-wav":
+        return "audio/wav"
+    return guessed
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="moodie")
     subcommands = parser.add_subparsers(dest="command_name", required=True)
@@ -122,6 +141,9 @@ def _parser() -> argparse.ArgumentParser:
 
     command = subcommands.add_parser("command", help="Send a natural-language station command")
     command.add_argument("text")
+
+    transcribe = subcommands.add_parser("transcribe", help="Transcribe an audio command file")
+    transcribe.add_argument("audio_file", type=Path)
 
     search = subcommands.add_parser("search", help="Search the configured music provider")
     search.add_argument("query")

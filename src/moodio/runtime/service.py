@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Awaitable, Callable
@@ -20,9 +21,28 @@ from moodio.domain.events import RuntimeEvent
 from moodio.domain.models import QueueItem, STATION_PLACEHOLDER_TRACK_ID, StationState, TranscriptSegment
 from moodio.domain.triggers import UserCommandTrigger
 from moodio.executor import execute_action
+from moodio.info import (
+    DuckDuckGoSearchProvider,
+    FetchWeatherProvider,
+    NoopWebSearchProvider,
+    StaticWeatherProvider,
+    WeatherProvider,
+    WebSearchProvider,
+)
 from moodio.router import route_trigger
+from moodio.runtime.control import StationControl
 from moodio.state_store import StateStore
 from moodio.station_agent import run_station_turn
+from moodio.voice import OpenAISpeechSynthesizer, OpenAITranscriber, SpeechSynthesizer, SpeechTranscriber
+
+
+_OPENAI_AUDIO_ENV_KEYS = {
+    "OPENAI_API_KEY",
+    "OPENAI_TTS_MODEL",
+    "OPENAI_TTS_VOICE",
+    "OPENAI_TTS_RESPONSE_FORMAT",
+    "OPENAI_STT_MODEL",
+}
 
 
 def _seed_now_playing() -> QueueItem:
@@ -71,8 +91,12 @@ class RuntimeService:
         self,
         *,
         state_store: StateStore | None = None,
-        station_turn_runner: Callable[[dict], Awaitable[FinalAction]] | None = None,
+        station_turn_runner: Callable[[dict, StationControl], Awaitable[str]] | None = None,
         runtime_event_executor: Callable[[FinalAction], list[RuntimeEvent]] | None = None,
+        speech_synthesizer: SpeechSynthesizer | None = None,
+        speech_transcriber: SpeechTranscriber | None = None,
+        web_search_provider: WebSearchProvider | None = None,
+        weather_provider: WeatherProvider | None = None,
     ) -> None:
         self._temp_dir: TemporaryDirectory[str] | None = None
         if state_store is None:
@@ -82,6 +106,10 @@ class RuntimeService:
         self.state_store = state_store
         self._station_turn_runner = station_turn_runner or run_station_turn
         self._runtime_event_executor = runtime_event_executor or execute_action
+        self.speech_synthesizer = speech_synthesizer
+        self.speech_transcriber = speech_transcriber
+        self.web_search_provider = web_search_provider or NoopWebSearchProvider()
+        self.weather_provider = weather_provider or StaticWeatherProvider()
         self.station_state = StationState.model_validate(
             {
                 "host_name": "moodio",
@@ -149,12 +177,53 @@ class RuntimeService:
             recent_context=self.state_store.recent_context(limit=5),
             scheduler_payload=None,
         )
-        final_action = await self._station_turn_runner(context_payload)
-        runtime_events = self._runtime_event_executor(final_action)
-        await self._apply_runtime_events(runtime_events)
+        self.station_state = self.station_state.model_copy(update={"mode": mode})
+        agent_message = await self._station_turn_runner(context_payload, StationControl(self))
+        await self._apply_agent_message(agent_message)
         self._sync_persisted_play_context()
 
         return AcceptedResponse(accepted=True, kind="natural_language", text=request.text)
+
+    async def _apply_agent_message(self, text: str) -> None:
+        if not text:
+            return
+
+        segment = TranscriptSegment.model_validate(
+            {
+                "segment_id": "seg_runtime_001",
+                "text": text,
+                "start_ms": 0,
+                "duration_ms": 3000,
+                "voice": "default_male_1",
+                "state": "speaking",
+            }
+        )
+        self.transcript_segments = [segment]
+        self.state_store.record_transcript(
+            segment_id=segment.segment_id,
+            text=segment.text,
+            start_ms=segment.start_ms,
+            duration_ms=segment.duration_ms,
+        )
+        self.station_state = self.station_state.model_copy(update={"status": "speaking"})
+
+        await self.broadcast("tts.segment.started", segment.model_dump())
+        if self.speech_synthesizer is not None:
+            audio = self.speech_synthesizer.synthesize(segment.text, voice=segment.voice)
+            await self.broadcast("tts.audio.ready", audio.model_dump(mode="json"))
+        await self.broadcast("tts.segment.completed", segment.model_dump())
+        await self.broadcast("station.state.updated", self.station_state.model_dump())
+
+    def transcribe_audio(self, audio: bytes, *, filename: str, content_type: str) -> dict:
+        if self.speech_transcriber is None:
+            raise ValueError("speech transcriber is not configured")
+        return {
+            "text": self.speech_transcriber.transcribe(
+                audio,
+                filename=filename,
+                content_type=content_type,
+            )
+        }
 
     def _sync_persisted_play_context(self) -> None:
         if self.station_state.now_playing.track_id != STATION_PLACEHOLDER_TRACK_ID:
@@ -254,3 +323,39 @@ class RuntimeService:
     async def ingest_playback_event(self, request: PlaybackEventRequest) -> AcceptedResponse:
         await self.broadcast(request.event_type, request.model_dump())
         return AcceptedResponse(accepted=True, kind="playback_event", text=None)
+
+
+def build_runtime_from_env() -> RuntimeService:
+    load_local_openai_audio_env()
+    runtime_kwargs = {
+        "web_search_provider": DuckDuckGoSearchProvider(),
+        "weather_provider": FetchWeatherProvider(),
+    }
+    if not os.environ.get("OPENAI_API_KEY"):
+        return RuntimeService(**runtime_kwargs)
+    return RuntimeService(
+        **runtime_kwargs,
+        speech_synthesizer=OpenAISpeechSynthesizer(),
+        speech_transcriber=OpenAITranscriber(),
+    )
+
+
+def load_local_openai_audio_env(env_path: Path | str = ".env") -> dict[str, str]:
+    path = Path(env_path)
+    if not path.exists():
+        return {}
+
+    loaded: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", maxsplit=1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key in _OPENAI_AUDIO_ENV_KEYS and value and key not in os.environ:
+            os.environ[key] = value
+            loaded[key] = value
+
+    return loaded
