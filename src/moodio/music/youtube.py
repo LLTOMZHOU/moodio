@@ -169,9 +169,11 @@ def _parse_date(value: Any) -> date | None:
         return None
 
 
-def _rank(track: ProviderTrack, preferences: DiscoveryPreferences) -> tuple[int, int, str]:
-    long_form = preferences.music_first and track.duration_seconds > 30 * 60
+def _rank(track: ProviderTrack, preferences: DiscoveryPreferences) -> tuple[int, int, int, str]:
+    long_form_seconds = 0
+    if preferences.music_first and track.duration_seconds > 30 * 60:
+        long_form_seconds = track.duration_seconds
     date_penalty = 0
     if preferences.prefer_released_after and track.release_date:
         date_penalty = 0 if track.release_date >= preferences.prefer_released_after else 1
-    return (1 if long_form else 0, date_penalty, track.title.casefold())
+    return (1 if long_form_seconds else 0, long_form_seconds, date_penalty, track.title.casefold())

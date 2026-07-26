@@ -158,17 +158,40 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
         if request.headers.get("range"):
             upstream_headers["Range"] = request.headers["range"]
 
+        client = httpx.AsyncClient(follow_redirects=True, timeout=30.0)
+        upstream: httpx.Response | None = None
+        try:
+            upstream = await client.send(
+                client.build_request("GET", track.stream_url, headers=upstream_headers),
+                stream=True,
+            )
+            upstream.raise_for_status()
+        except httpx.HTTPError as exc:
+            if upstream is not None:
+                await upstream.aclose()
+            await client.aclose()
+            raise HTTPException(status_code=502, detail="Could not open the provider audio stream.") from exc
+
         async def stream_body():
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-                async with client.stream("GET", track.stream_url, headers=upstream_headers) as upstream:
-                    upstream.raise_for_status()
-                    async for chunk in upstream.aiter_bytes(64 * 1024):
-                        yield chunk
+            try:
+                async for chunk in upstream.aiter_bytes(64 * 1024):
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+
+        response_headers = {
+            header: value
+            for header in ("Accept-Ranges", "Content-Range", "Content-Length")
+            if (value := upstream.headers.get(header)) is not None
+        }
+        response_headers.setdefault("Accept-Ranges", "bytes")
 
         return StreamingResponse(
             stream_body(),
-            media_type=track.stream_content_type or "audio/mpeg",
-            headers={"Accept-Ranges": "bytes"},
+            status_code=upstream.status_code,
+            media_type=track.stream_content_type or upstream.headers.get("content-type") or "audio/mpeg",
+            headers=response_headers,
         )
 
     @app.post("/api/preferences/import")

@@ -56,6 +56,7 @@ You MUST call tools in these situations — do NOT just talk about doing them:
 - **search_music**: Your discovery tool for artists, songs, genres, moods, activities, and eras. Its default results favor track-length music; use an explicit duration cap only when the listener asks for one. Recency is best-effort.
 - **queue_music**: Queue an inspected result. Use it for autonomous programming and for Listener requests that are not explicitly immediate.
 - **play_now**: Resolve and start an inspected result immediately. Use it only when the Listener explicitly asks to play something now.
+- Normal programming means songs, not extended videos: choose a candidate around thirty minutes or shorter whenever one is available. Only choose a longer mix, DJ set, ambience stream, or live session when the Listener asks for that format or ordinary tracks genuinely are not available. A matching title is not enough reason to queue a multi-hour item.
 - If a search fails, try a different query. Don't give up after one attempt — rephrase, broaden, or shift the angle.
 
 ## When to use web_search
@@ -174,8 +175,8 @@ def build_station_tools(control: StationControl) -> list:
         max_duration_seconds: int | None = None,
         prefer_released_after: str | None = None,
     ) -> dict:
-        """Search the music provider and return queueable candidates. Default ranking favors ordinary track lengths;
-        pass max_duration_seconds only for an explicit hard limit. Release recency is best-effort."""
+        """Search the music provider and return queueable candidates. Default ranking strongly favors ordinary
+        song-length results; pass max_duration_seconds only for an explicit hard limit. Release recency is best-effort."""
         preferences = {"max_duration_seconds": max_duration_seconds, "prefer_released_after": prefer_released_after}
         return await control.search_music(query, limit=limit, preferences={key: value for key, value in preferences.items() if value is not None})
 
