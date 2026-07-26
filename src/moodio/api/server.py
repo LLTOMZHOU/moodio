@@ -80,7 +80,7 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
     @app.get("/api/debug/trace")
     async def get_debug_trace(limit: int = 100) -> dict:
         runtime: RuntimeService = app.state.runtime
-        return {"items": runtime.journal.recent_trace(min(max(limit, 1), 1_000))}
+        return {"items": runtime.raw_session_history(min(max(limit, 1), 1_000))}
 
     @app.get("/api/debug/session")
     async def get_debug_session(limit: int = 100) -> dict:

@@ -159,7 +159,7 @@ uv run moodio command "play something warmer"
 uv run moodio transcribe ./command.wav
 ```
 
-`trace` is the raw persisted event stream, including tool activity and response deltas. `session` shows the persisted Agents SDK conversation items. Both are intentionally local operator surfaces.
+`trace` shows finalized persisted Agents SDK conversation items: Listener messages, assistant messages, tool calls, and tool outputs. It intentionally excludes streaming text deltas; those are transient UI transport events. `session` is an alias for `trace`, and `tail` remains available when live runtime events are useful.
 
 ## Docs
 

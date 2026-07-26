@@ -523,7 +523,6 @@ class RuntimeService:
             "span_id": self._next_span_id(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        self.journal.append_trace(envelope)
         for subscriber in list(self._subscribers):
             await subscriber.put(envelope)
 
@@ -535,8 +534,7 @@ class RuntimeService:
             "listener_profile": self._listener_profile_text(),
             "recent_context": asdict(self.state_store.recent_context(limit=20)),
             "tasks": [task.model_dump(mode="json") for task in self.task_store.list()],
-            "trace_path": str(self.journal.trace_path),
-            "session_path": str(self.station_dir / "agent-session.jsonl"),
+            "conversation_path": str(self.station_dir / "agent-session.jsonl"),
             "profile_source": preferences.source if preferences else None,
         }
 
