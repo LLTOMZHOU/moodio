@@ -1,6 +1,8 @@
 .venv/
 .env
 .codex/config.toml
+.claude/
+.uv-cache/
 .webui_secret_key
 moodio.db
 var/
