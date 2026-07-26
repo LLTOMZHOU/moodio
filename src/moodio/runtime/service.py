@@ -86,27 +86,13 @@ _FEED_EVENT_PREFIXES = (
 def _seed_now_playing() -> QueueItem:
     return QueueItem.model_validate(
         {
-            "track_id": "apple:track:if-bread",
-            "title": "If",
-            "artist": "Bread",
-            "album": "Manna",
-            "duration_seconds": 197,
-            "playback_ref": "apple_music:catalog:12345",
-            "artwork_url": "https://example.test/artwork/if.jpg",
-        }
-    )
-
-
-def _seed_next_track() -> QueueItem:
-    return QueueItem.model_validate(
-        {
-            "track_id": "apple:track:soft-sunset-02",
-            "title": "Soft Sunset",
-            "artist": "Example Artist",
-            "album": "Golden Hour",
-            "duration_seconds": 212,
-            "playback_ref": "apple_music:catalog:67890",
-            "artwork_url": "https://example.test/artwork/soft-sunset.jpg",
+            "track_id": STATION_PLACEHOLDER_TRACK_ID,
+            "title": "Choose something to start",
+            "artist": "Moodio",
+            "album": "Your personal station",
+            "duration_seconds": 1,
+            "playback_ref": STATION_PLACEHOLDER_TRACK_ID,
+            "artwork_url": "https://example.test/artwork/station-idle.jpg",
         }
     )
 
@@ -166,12 +152,10 @@ class RuntimeService:
             {
                 "host_name": "moodio",
                 "mode": "radio_continue",
-                "status": "playing",
+                "status": "idle",
                 "talk_density": "balanced",
                 "now_playing": _seed_now_playing().model_dump(),
-                "queue": [ProgramItem.music(
-                    _seed_next_track(), origin="scheduler", reason="Initial station seed"
-                ).model_dump()],
+                "queue": [],
                 "favorites_enabled": True,
                 "voice_mode": False,
             }
