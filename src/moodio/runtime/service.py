@@ -5,7 +5,7 @@ import json
 import os
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -523,8 +523,36 @@ class RuntimeService:
             "span_id": self._next_span_id(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+        self.journal.append_trace(envelope)
         for subscriber in list(self._subscribers):
             await subscriber.put(envelope)
+
+    def debug_snapshot(self) -> dict:
+        """Return local operator state without creating another Station runtime."""
+        preferences = self.state_store.get_listener_preferences()
+        return {
+            "station": self.snapshot().model_dump(),
+            "listener_profile": self._listener_profile_text(),
+            "recent_context": asdict(self.state_store.recent_context(limit=20)),
+            "tasks": [task.model_dump(mode="json") for task in self.task_store.list()],
+            "trace_path": str(self.journal.trace_path),
+            "session_path": str(self.station_dir / "agent-session.jsonl"),
+            "profile_source": preferences.source if preferences else None,
+        }
+
+    def raw_session_history(self, limit: int = 100) -> list[dict]:
+        session_path = self.station_dir / "agent-session.jsonl"
+        if not session_path.exists():
+            return []
+        entries: list[dict] = []
+        for raw_line in session_path.read_text(encoding="utf-8").splitlines()[-max(1, limit):]:
+            try:
+                entry = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict):
+                entries.append(entry)
+        return entries
 
     async def accept_command(self, request: CommandRequest) -> AcceptedResponse:
         self.state_store.record_command(request.text)

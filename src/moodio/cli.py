@@ -10,9 +10,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
+import httpx
 import uvicorn
 
-from moodio.api.schemas import CommandRequest, FavoriteRequest
 from moodio.music.providers import MusicProvider
 from moodio.music.youtube import YouTubeProvider
 from moodio.runtime.service import RuntimeService, build_runtime_from_env
@@ -58,64 +58,103 @@ async def _run_async(
     provider_factory: Callable[[], MusicProvider],
     stdout: TextIO,
 ) -> int:
-    if args.command_name == "search":
-        provider = provider_factory()
-        tracks = await provider.search_tracks(args.query, limit=args.limit)
-        _print_json([track.model_dump() for track in tracks], stdout)
-        return 0
-
-    runtime = runtime_factory()
-
     if args.command_name == "now":
-        _print_json(runtime.snapshot().model_dump(), stdout)
+        _print_json(await _server_request(args, "GET", "/api/now"), stdout)
     elif args.command_name == "transcript":
-        _print_json(runtime.transcript_snapshot(), stdout)
+        _print_json(await _server_request(args, "GET", "/api/transcript/current"), stdout)
+    elif args.command_name == "inspect":
+        _print_json(await _server_request(args, "GET", "/api/debug/inspect"), stdout)
+    elif args.command_name == "feed":
+        _print_json(await _server_request(args, "GET", "/api/feed", params={"limit": args.limit}), stdout)
+    elif args.command_name == "trace":
+        _print_json(await _server_request(args, "GET", "/api/debug/trace", params={"limit": args.limit}), stdout)
+    elif args.command_name == "session":
+        _print_json(await _server_request(args, "GET", "/api/debug/session", params={"limit": args.limit}), stdout)
     elif args.command_name == "command":
-        response = await runtime.accept_command(CommandRequest(text=args.text))
-        _print_json(response.model_dump(), stdout)
+        _print_json(await _server_request(args, "POST", "/api/command", json={"text": args.text}, timeout=120), stdout)
     elif args.command_name == "transcribe":
         audio_path = args.audio_file
-        _print_json(
-            runtime.transcribe_audio(
-                audio_path.read_bytes(),
-                filename=audio_path.name,
-                content_type=_audio_content_type(audio_path),
-            ),
-            stdout,
+        _print_json(await _server_request(
+            args,
+            "POST",
+            f"/api/transcribe?filename={audio_path.name}",
+            content=audio_path.read_bytes(),
+            headers={"content-type": _audio_content_type(audio_path)},
+            timeout=120,
+        ), stdout)
+    elif args.command_name == "search":
+        response = await _server_request(
+            args,
+            "POST",
+            "/api/music/search",
+            json={"query": args.query, "limit": args.limit, "preferences": {}},
+            timeout=60,
         )
+        _print_json(response, stdout)
     elif args.command_name == "next":
-        _print_json(await runtime.next_track(), stdout)
+        _print_json(await _server_request(args, "POST", "/api/next"), stdout)
     elif args.command_name == "previous":
-        _print_json(await runtime.previous_track(), stdout)
+        _print_json(await _server_request(args, "POST", "/api/previous"), stdout)
     elif args.command_name == "favorite":
-        response = await runtime.favorite_track(FavoriteRequest(track_id=args.track_id))
-        _print_json(response.model_dump(), stdout)
+        _print_json(await _server_request(args, "POST", "/api/favorite", json={"track_id": args.track_id}), stdout)
     elif args.command_name == "queue":
         provider_name, provider_track_id = _parse_track_ref(args.track_ref)
         if provider_name != "youtube":
             raise ValueError(f"unsupported provider: {provider_name}")
-        provider = provider_factory()
-        provider_track = await provider.resolve_track(provider_track_id)
-        _print_json(await runtime.queue_track(provider_track.to_queue_item()), stdout)
+        _print_json(await _server_request(
+            args,
+            "POST",
+            "/api/music/queue-next",
+            json={"candidate_id": provider_track_id, "reason": "CLI queue next"},
+            timeout=60,
+        ), stdout)
     elif args.command_name == "preferences_import":
-        preferences = runtime.import_listener_preferences(
-            args.profile_file.read_text(encoding="utf-8"),
-            source=args.source,
+        response = await _server_request(
+            args,
+            "POST",
+            "/api/preferences/import",
+            json={"source": args.source, "profile_text": args.profile_file.read_text(encoding="utf-8")},
         )
-        _print_json(
-            {
-                "source": preferences.source,
-                "raw_text": preferences.raw_text,
-                "seed_queries": preferences.seed_queries,
-            },
-            stdout,
-        )
+        _print_json(response, stdout)
     elif args.command_name == "preferences_apple_music_import":
-        _print_json(await runtime.import_apple_music_export(args.xml_file.read_bytes()), stdout)
+        _print_json(await _server_request(
+            args,
+            "POST",
+            "/api/preferences/apple-music-xml",
+            content=args.xml_file.read_bytes(),
+            headers={"content-type": "application/xml"},
+            timeout=120,
+        ), stdout)
     else:
         raise ValueError(f"unsupported command: {args.command_name}")
 
     return 0
+
+
+async def _server_request(
+    args: argparse.Namespace,
+    method: str,
+    path: str,
+    *,
+    json: dict | None = None,
+    params: dict | None = None,
+    content: bytes | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 15,
+) -> dict:
+    """Send an operator command to the running Station, never a second local runtime."""
+    url = f"http://{args.host}:{args.port}{path}"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.request(method, url, json=json, params=params, content=content, headers=headers)
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = response.text.strip() or str(exc)
+        raise ValueError(f"server request failed: {detail}") from exc
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("server returned a non-object response")
+    return payload
 
 
 async def _tail(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
@@ -301,33 +340,53 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", default=8765, type=int)
 
     tail = subcommands.add_parser("tail", help="Stream runtime events from a running server")
-    tail.add_argument("--host", default="127.0.0.1")
-    tail.add_argument("--port", default=8765, type=int)
+    _add_server_options(tail)
     tail.add_argument("--filter", action="append", help="Filter events by substring (e.g. 'tts', 'agent')")
     tail.add_argument("--json", action="store_true", help="Output raw JSON instead of formatted events")
 
-    subcommands.add_parser("now", help="Print current station state")
-    subcommands.add_parser("transcript", help="Print current transcript")
-    subcommands.add_parser("next", help="Advance to next queued track")
-    subcommands.add_parser("previous", help="Return to previous track")
+    now = subcommands.add_parser("now", help="Print current station state from the running server")
+    _add_server_options(now)
+    transcript = subcommands.add_parser("transcript", help="Print the current server transcript")
+    _add_server_options(transcript)
+    inspect = subcommands.add_parser("inspect", help="Inspect live Queue, profile, context, and tasks")
+    _add_server_options(inspect)
+    feed = subcommands.add_parser("feed", help="Read the persisted listener-facing station history")
+    _add_server_options(feed)
+    feed.add_argument("--limit", default=100, type=int)
+    trace = subcommands.add_parser("trace", help="Read raw persisted runtime events, including model deltas")
+    _add_server_options(trace)
+    trace.add_argument("--limit", default=100, type=int)
+    session = subcommands.add_parser("session", help="Read raw persisted Agents SDK session items")
+    _add_server_options(session)
+    session.add_argument("--limit", default=100, type=int)
+    next_command = subcommands.add_parser("next", help="Advance to next queued track on the running server")
+    _add_server_options(next_command)
+    previous = subcommands.add_parser("previous", help="Return to previous track on the running server")
+    _add_server_options(previous)
 
     command = subcommands.add_parser("command", help="Send a natural-language station command")
+    _add_server_options(command)
     command.add_argument("text")
 
     transcribe = subcommands.add_parser("transcribe", help="Transcribe an audio command file")
+    _add_server_options(transcribe)
     transcribe.add_argument("audio_file", type=Path)
 
-    search = subcommands.add_parser("search", help="Search the configured music provider")
+    search = subcommands.add_parser("search", help="Search through the running station's music provider")
+    _add_server_options(search)
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=10)
 
-    queue = subcommands.add_parser("queue", help="Queue a provider track ref as the next track")
+    queue = subcommands.add_parser("queue", help="Queue a YouTube provider track ref on the running station")
+    _add_server_options(queue)
     queue.add_argument("track_ref")
 
     favorite = subcommands.add_parser("favorite", help="Favorite a track id")
+    _add_server_options(favorite)
     favorite.add_argument("track_id")
 
     preferences = subcommands.add_parser("preferences", help="Manage listener taste inputs")
+    _add_server_options(preferences)
     preference_subcommands = preferences.add_subparsers(dest="preferences_command", required=True)
 
     preference_import = preference_subcommands.add_parser("import", help="Import listener preferences from a text file")
@@ -343,6 +402,11 @@ def _parser() -> argparse.ArgumentParser:
     apple_music_import.set_defaults(command_name="preferences_apple_music_import")
 
     return parser
+
+
+def _add_server_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--host", default="127.0.0.1", help="Moodio server host")
+    parser.add_argument("--port", default=8765, type=int, help="Moodio server port")
 
 
 def main() -> None:

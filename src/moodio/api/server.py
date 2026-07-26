@@ -72,6 +72,21 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
         runtime: RuntimeService = app.state.runtime
         return {"items": runtime.journal.recent(min(max(limit, 1), 500))}
 
+    @app.get("/api/debug/inspect")
+    async def get_debug_inspect() -> dict:
+        runtime: RuntimeService = app.state.runtime
+        return runtime.debug_snapshot()
+
+    @app.get("/api/debug/trace")
+    async def get_debug_trace(limit: int = 100) -> dict:
+        runtime: RuntimeService = app.state.runtime
+        return {"items": runtime.journal.recent_trace(min(max(limit, 1), 1_000))}
+
+    @app.get("/api/debug/session")
+    async def get_debug_session(limit: int = 100) -> dict:
+        runtime: RuntimeService = app.state.runtime
+        return {"items": runtime.raw_session_history(min(max(limit, 1), 1_000))}
+
     @app.post("/api/command", status_code=202)
     async def post_command(request: CommandRequest) -> dict:
         runtime: RuntimeService = app.state.runtime
