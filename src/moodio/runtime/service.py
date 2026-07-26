@@ -752,6 +752,8 @@ class RuntimeService:
         }
 
     async def play(self) -> TransportActionResponse:
+        if self.station_state.now_playing.track_id == STATION_PLACEHOLDER_TRACK_ID and self.station_state.queue:
+            await self.next_track()
         self.station_state = self.station_state.model_copy(update={"status": "playing"})
         await self.broadcast("station.state.updated", self.station_state.model_dump())
         self._queue_internal_event("playback.resumed", {})

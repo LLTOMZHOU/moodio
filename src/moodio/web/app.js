@@ -61,6 +61,23 @@ function renderEmbed(track) {
   audio.play().then(() => setMessage("♪ playing")).catch(() => setMessage("Press Play to begin audio"));
 }
 
+function formatTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "--:--";
+  const whole = Math.floor(seconds);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+function renderPlaybackProgress() {
+  const audio = byId("music-audio");
+  const progress = byId("playback-progress");
+  const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null;
+  progress.disabled = !duration;
+  progress.max = String(Math.round(duration || 1000));
+  progress.value = String(Math.min(Math.round(audio.currentTime || 0), Number(progress.max)));
+  byId("playback-elapsed").textContent = formatTime(audio.currentTime || 0);
+  byId("playback-duration").textContent = formatTime(duration);
+}
+
 // --- Station state rendering ---
 
 function renderState(payload) {
@@ -253,6 +270,9 @@ async function postAction(action) {
   const payload = await postJson(`/api/${action}`, {});
   setMessage(`${action} accepted`);
   await refreshState();
+  if (action === "play" && audio?.src) {
+    await audio.play().then(() => setMessage("♪ playing")).catch(() => setMessage("Press Play to begin audio"));
+  }
   return payload;
 }
 
@@ -359,6 +379,17 @@ byId("apple-music-import-form").addEventListener("submit", async (event) => {
 });
 
 const musicAudio = byId("music-audio");
+musicAudio.addEventListener("loadedmetadata", renderPlaybackProgress);
+musicAudio.addEventListener("durationchange", renderPlaybackProgress);
+musicAudio.addEventListener("timeupdate", renderPlaybackProgress);
+musicAudio.addEventListener("emptied", renderPlaybackProgress);
+byId("playback-progress").addEventListener("input", (event) => {
+  const nextPosition = Number(event.target.value);
+  if (Number.isFinite(nextPosition) && Number.isFinite(musicAudio.duration)) {
+    musicAudio.currentTime = nextPosition;
+    renderPlaybackProgress();
+  }
+});
 musicAudio.addEventListener("ended", async () => {
   if (!state.now?.now_playing) return;
   await postJson("/api/events/playback", {

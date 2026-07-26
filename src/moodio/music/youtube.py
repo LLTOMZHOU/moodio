@@ -69,6 +69,7 @@ class YouTubeProvider:
             update={
                 "stream_url": stream_url,
                 "stream_headers": {str(key): str(value) for key, value in headers.items()} if isinstance(headers, dict) else {},
+                "stream_content_type": _stream_content_type(payload),
             }
         )
 
@@ -143,6 +144,19 @@ def _thumbnail(payload: dict[str, Any]) -> str | None:
         for thumbnail in reversed(thumbnails):
             if isinstance(thumbnail, dict) and isinstance(thumbnail.get("url"), str):
                 return thumbnail["url"]
+    return None
+
+
+def _stream_content_type(payload: dict[str, Any]) -> str | None:
+    audio_ext = payload.get("audio_ext") or payload.get("ext")
+    if audio_ext == "webm":
+        return "audio/webm"
+    if audio_ext in {"m4a", "mp4"}:
+        return "audio/mp4"
+    if audio_ext == "opus":
+        return "audio/ogg; codecs=opus"
+    if audio_ext == "mp3":
+        return "audio/mpeg"
     return None
 
 

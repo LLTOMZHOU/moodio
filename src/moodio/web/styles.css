@@ -280,6 +280,22 @@ h3 {
     linear-gradient(180deg, #ffd67a, var(--amber));
 }
 
+.playback-progress {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.playback-progress input[type="range"] {
+  width: 100%;
+  accent-color: var(--walnut);
+}
+
 .radio-dial span {
   font-size: 12px;
   font-weight: 900;

@@ -146,6 +146,7 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
     @app.get("/api/music/stream/{track_ref:path}")
     async def get_music_stream(track_ref: str, request: Request) -> StreamingResponse:
         """Proxy a short-lived provider stream without disclosing its URL to the browser."""
+        runtime: RuntimeService = app.state.runtime
         track = await runtime.resolve_candidate(track_ref)
         if not track.stream_url:
             raise HTTPException(status_code=503, detail="track is not currently streamable")
@@ -162,7 +163,7 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
 
         return StreamingResponse(
             stream_body(),
-            media_type="audio/mpeg",
+            media_type=track.stream_content_type or "audio/mpeg",
             headers={"Accept-Ranges": "bytes"},
         )
 

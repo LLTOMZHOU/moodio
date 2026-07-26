@@ -42,6 +42,7 @@ class ProviderTrack(BaseModel):
     external_url: str | None = None
     stream_url: str | None = Field(default=None, exclude=True)
     stream_headers: dict[str, str] = Field(default_factory=dict, exclude=True)
+    stream_content_type: str | None = Field(default=None, exclude=True)
     embed_html: str | None = None
     attribution: dict[str, str] = Field(default_factory=dict)
     kind: Literal["song", "video", "album", "artist", "playlist"] = "song"

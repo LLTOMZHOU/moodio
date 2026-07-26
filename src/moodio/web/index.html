@@ -59,6 +59,11 @@
             </div>
 
             <audio id="music-audio" preload="none"></audio>
+            <div class="playback-progress">
+              <span id="playback-elapsed">0:00</span>
+              <input id="playback-progress" type="range" min="0" max="1000" value="0" step="1" aria-label="Playback progress" disabled />
+              <span id="playback-duration">--:--</span>
+            </div>
             <audio id="tts-audio" controls hidden></audio>
             <p id="tts-hint" class="hint" hidden></p>
 
