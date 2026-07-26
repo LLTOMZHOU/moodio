@@ -115,6 +115,57 @@ uv run moodio clear-conversation --yes
 
 **Pass conditions:** import evidence becomes profile context. A resulting Queue is personal and provider-validated, but a no-op is acceptable when the DJ lacks sufficient confidence or the Queue is already healthy.
 
+## 7. Implicit taste learning requires a pattern, not one click
+
+**Purpose:** direct Listener actions can become durable taste context without a literal “remember this,” but only after the evidence is coherent and repeated.
+
+**Precondition:** use a disposable Station with a known profile. Record its profile text and Queue before starting.
+
+**Status:** intended behavior to evaluate and build toward. The current prompt makes explicit profile updates mandatory, but does not yet make this implicit inference mandatory.
+
+| Step | Command | Ideal Station result |
+| --- | --- | --- |
+| 1 | Ask the DJ to queue a varied, upbeat set: `uv run moodio command "Queue three energetic electronic tracks for later."` | The DJ makes three DJ-origin Music items through normal search/inspect/queue tools. No profile update is required yet. |
+| 2 | Use direct control to skip two of those tracks as they become current: `uv run moodio next` twice. | Each skip takes effect immediately and is recorded as a Listener-origin playback signal. A single skip or favorite by itself must **not** rewrite the profile. |
+| 3 | Search and queue two calmer instrumental choices directly: `uv run moodio search "quiet instrumental piano"`, then `uv run moodio queue <first-ref> --revision <revision>` and repeat with another result. | The Listener selections appear in click order and are durable evidence, not a conversational request to the DJ. |
+| 4 | Wake autonomous work: `uv run moodio playback near_end`, then wait for maintenance. | The DJ reviews the accumulated events, profile, Queue, and recent context. With the repeated skip/selection pattern, it should call `update_listener_profile` with a cautious, concise taste note. |
+| 5 | `uv run moodio inspect` | The profile gains a revisable inference such as a *recent* preference for calmer instrumental material; it does not assert a permanent dislike of electronic music. |
+
+**Pass conditions:** no explicit “remember,” “prefer,” or “avoid” wording appears in the Listener inputs. The trace shows profile read/update only after several aligned signals, and the profile revision explains the evidence. Run the same journey with only one favorite or one skip as a negative control: that run must not create a profile revision.
+
+## 8. Multi-turn co-programming preserves Listener choices
+
+**Purpose:** the DJ can build on a Listener selection over several turns without taking ownership of it.
+
+| Step | Command | Ideal Station result |
+| --- | --- | --- |
+| 1 | `uv run moodio command "Build a three-track warm, acoustic evening run for later."` | The DJ searches, inspects, and queues three DJ-origin Music items. It does not start playback. |
+| 2 | `uv run moodio search "José González Heartbeats"`, then `uv run moodio queue <playback-ref> --revision <revision>` | The direct Listener selection enters the priority segment; no agent run is necessary. |
+| 3 | `uv run moodio command "Keep the rest cohesive around the song I just added, but don't remove or replace it."` | The DJ reads Queue state and sees the Listener-origin item/event. It may append suitable DJ music or replace only DJ-origin items; it must preserve the Listener item and its position. |
+| 4 | `uv run moodio pause` followed by `uv run moodio playback near_end` | The pause applies immediately. A maintenance wake may inspect state, but cannot resume transport or surface audible Commentary while paused. |
+| 5 | `uv run moodio command "When I resume, keep the acoustic direction going."` followed by `uv run moodio play` | The natural-language request programs follow-ups; the direct play control is what actually resumes transport. |
+
+**Pass conditions:** across the whole conversation, the same Listener-selected `program_item_id` survives unchanged. The DJ may change its own nearby items but never interposes ahead of the Listener-priority segment, resumes without a direct control, or treats the direct selection as an instruction to rewrite the Listener profile by itself.
+
+## 9. Direct control wins during an in-flight DJ run
+
+**Purpose:** verify the service, not just the model: a direct Listener action must remain immediate when it races a model-driven Queue mutation.
+
+**Precondition:** use two terminals. First search and retain a valid candidate and current Queue revision:
+
+```bash
+uv run moodio search "The Paper Kites Bloom"
+uv run moodio now
+```
+
+| Step | Command | Ideal Station result |
+| --- | --- | --- |
+| 1 | In terminal A, start a slower programming request: `uv run moodio command "Research and queue three new folk tracks that fit my station."` | The DJ begins a model/tool run. Watch `uv run moodio tail --filter agent --json` in another terminal. |
+| 2 | Before terminal A completes, in terminal B run `uv run moodio queue <saved-playback-ref>` | The direct queue action succeeds immediately and records a Listener-origin item. It never waits for the model lane. |
+| 3 | Let the agent run finish; inspect `uv run moodio now`, `uv run moodio trace --limit 100`, and `uv run moodio conversation --limit 20`. | If the DJ observed an old Queue revision, its mutation is rejected as stale. It may refresh state and make one safe append-only attempt if Queue health still needs help. |
+
+**Pass conditions:** the direct item is never lost, moved behind the DJ's additions, or replaced. The agent produces one coherent final response; there is no duplicate Queue mutation caused by retrying stale work blindly. Trace/feed make both the direct control and the agent result explainable.
+
 ## Evaluation scorecard
 
 For each journey, score each category as pass, partial, or fail:
@@ -122,6 +173,7 @@ For each journey, score each category as pass, partial, or fail:
 - **Intent boundary:** did the DJ distinguish conversation, explicit music requests, direct controls, and operational wakes?
 - **Tool discipline:** did it inspect state and use provider-backed candidates before claiming playback changes?
 - **Queue safety:** did it preserve Listener choices, Queue revision semantics, and pause/transport authority?
-- **Memory quality:** did it write only concise, revisable preferences when explicitly justified?
+- **Memory quality:** did it write only concise, revisable preferences when the available evidence justified it?
+- **Evidence threshold:** did it avoid learning from one weak signal, but form a cautious preference after repeated coherent behavior?
 - **Pacing:** did it avoid unnecessary commentary, duplicate searches, and visible acknowledgements for background work?
 - **Traceability:** can `conversation`, `feed`, `trace`, and `latency` explain the observable result without relying on streaming deltas?
