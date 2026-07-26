@@ -173,6 +173,8 @@ _Avoid_: Listener selection, Music item
 - `queue_commentary` accepts an optional upcoming `for_music_item_id`: omitted is a general transition, supplied creates **Anchored Commentary**.
 - A **Search result** may be an Available candidate or a **Browse result**.
 - A **Browse result** never enters the Queue directly.
+- **Discovery preferences** are small, caller-visible search preferences rather than a provider query language: music-first duration ranking is the default; a duration cap is explicit; recency is best-effort and may be unknown.
+- Search normally down-ranks results longer than roughly 30 minutes, but that is a preference rather than a hard limit when a mix, ambience, DJ set, or extended session is wanted.
 
 ## Example dialogue
 

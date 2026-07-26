@@ -90,7 +90,7 @@ The station controller is the central module. No caller—not the UI, agent, sch
 
 ### Music discovery module
 
-**Interface:** turns a musical query and optional station context into normalized search results and queueable candidates.
+**Interface:** turns a musical query, small optional search preferences, and optional station context into normalized search results and queueable candidates.
 
 It owns:
 
@@ -99,6 +99,8 @@ It owns:
 - availability checks
 - short-lived metadata caching
 - filtering of low-quality results such as covers, remixes, live recordings, or unrelated videos when the request calls for an original release
+- down-ranking results longer than roughly 30 minutes unless the Listener's request or Station context clearly calls for a mix, ambience, DJ set, or extended session
+- applying simple, honest result preferences: a music-first duration bias by default, an explicit duration cap when the caller asks for one, and best-effort recency when provider metadata supports it
 
 It does not own queue mutations or playback transport.
 
@@ -112,11 +114,12 @@ class MusicProvider(Protocol):
 
     async def search_tracks(
         self,
-    query: str,
-    *,
-    limit: int,
-    context: DiscoveryContext,
-) -> list[DiscoveryResult]: ...
+        query: str,
+        *,
+        limit: int,
+        preferences: DiscoveryPreferences,
+        context: DiscoveryContext,
+    ) -> list[DiscoveryResult]: ...
 
     async def resolve_track(self, ref: TrackRef) -> ResolvedTrack: ...
 
@@ -126,6 +129,8 @@ class MusicProvider(Protocol):
 ```
 
 The first adapter to evaluate is the experimental `YouTubeProvider`. SoundCloud remains a deprecated legacy adapter until it can satisfy the same interface cleanly.
+
+`DiscoveryPreferences` is deliberately small rather than a catalogue-query language. It initially supports a music-first duration preference (the default), an optional explicit `max_duration_seconds`, and an optional `prefer_released_after` date. The first is a ranking signal: ordinary searches favor track-length results and strongly down-rank results over roughly 30 minutes, but may still return them when they are the best fit. A duration cap is a caller-requested hard filter, useful when a Listener explicitly asks for short tracks. Recency is best-effort: the adapter may rank or discard a result only when it has trustworthy release/upload metadata, and must label unknown dates rather than inventing precision. Result metadata records which preferences were applied and why a result was ranked or excluded, so the UI can stay honest about what happened.
 
 ### Experimental YouTube provider adapter
 
@@ -145,7 +150,7 @@ open_stream(video_id)
   -> server opens the upstream stream
 ```
 
-The direct-search UI is one Apple-Music-like fuzzy search box. It groups returned results with pills such as Songs, Artists, Albums, Videos, and Playlists; these are result labels, not a provider-specific search form. A Song or playable Video can become a Listener selection, with explicit **Play now** and **Queue next** controls. Both verify provider availability before committing. **Play now** then interrupts the current Music item, records it as skipped, and does not reinsert it; on failure it preserves current playback and reports the failure. **Queue next** only programs the verified selection without changing transport. Repeated Queue next choices append in click order to a Listener-priority segment immediately after the current item; the DJ cannot interpose music there, and any Anchored Commentary moves with the displaced target. An Artist, Album, or Playlist is a Browse result that opens further provider results before anything is queued. When the provider can reliably and quickly expand an artist or album, the UI may show that richer result; otherwise it falls back to a fuzzy follow-up search. Genre, mood, and activity are not a verified provider filter: the Listener or DJ expresses them as free-text queries, and the DJ may use bounded research to formulate or rank those queries. Discovery returns metadata only; playback remains a separate, just-in-time availability check.
+The direct-search UI is one Apple-Music-like fuzzy search box. It groups returned results with pills such as Songs, Artists, Albums, Videos, and Playlists; these are result labels, not a provider-specific search form. Its normal request uses the music-first duration preference. A later compact filter affordance may offer “shorter tracks” and “recent,” but it must describe them as preferences unless the caller explicitly enables a duration cap. A Song or playable Video can become a Listener selection, with explicit **Play now** and **Queue next** controls. Both verify provider availability before committing. **Play now** then interrupts the current Music item, records it as skipped, and does not reinsert it; on failure it preserves current playback and reports the failure. **Queue next** only programs the verified selection without changing transport. Repeated Queue next choices append in click order to a Listener-priority segment immediately after the current item; the DJ cannot interpose music there, and any Anchored Commentary moves with the displaced target. An Artist, Album, or Playlist is a Browse result that opens further provider results before anything is queued. When the provider can reliably and quickly expand an artist or album, the UI may show that richer result; otherwise it falls back to a fuzzy follow-up search. Genre, mood, and activity are not a verified provider filter: the Listener or DJ expresses them as free-text queries, and the DJ may use bounded research to formulate or rank those queries. Discovery returns metadata only; playback remains a separate, just-in-time availability check.
 
 The adapter must:
 
@@ -374,7 +379,7 @@ get_recent_events(limit)
 get_queue()
 read_listener_profile()
 update_listener_profile(content, reason)
-search_music(query, limit)
+search_music(query, limit, preferences?)
 inspect_candidates(candidate_ids)
 queue_music(candidate_id, reason, based_on_queue_revision)
 queue_commentary(text, reason, based_on_queue_revision, for_music_item_id?)
@@ -389,7 +394,7 @@ update_station_task(task_id, instruction_or_recurrence)
 cancel_station_task(task_id)
 ```
 
-`get_queue()` returns the Queue revision, playback state and current item, plus ordered upcoming Program items with their type, origin (`listener` or `dj`), and any anchor relationship. It deliberately omits provider URLs and raw event history. `queue_music` and `queue_commentary` require that revision, reject stale or immediately duplicate work, and say in their tool descriptions that the DJ must inspect the Queue before programming it. `queue_commentary` accepts an optional `for_music_item_id`: omitted creates a general transition only when Music follows, while a supplied upcoming Music-item ID creates Anchored Commentary that moves or is removed with that item. A stale command returns structured `stale_queue_revision` data; the DJ may refresh and make one new append-only attempt only if Queue health remains below target, otherwise the job is superseded. The DJ can call `get_queue()` and `search_music()` in parallel before deciding what to queue. `play_now` is available only during an active Listener interaction that explicitly requests immediate playback; autonomous runs queue rather than interrupt.
+`search_music` accepts the same small `DiscoveryPreferences` shape as the provider seam. The DJ normally leaves it at music-first defaults; it asks for a hard cap only when the request makes that material, and treats a recency request as best-effort. `get_queue()` returns the Queue revision, playback state and current item, plus ordered upcoming Program items with their type, origin (`listener` or `dj`), and any anchor relationship. It deliberately omits provider URLs and raw event history. `queue_music` and `queue_commentary` require that revision, reject stale or immediately duplicate work, and say in their tool descriptions that the DJ must inspect the Queue before programming it. `queue_commentary` accepts an optional `for_music_item_id`: omitted creates a general transition only when Music follows, while a supplied upcoming Music-item ID creates Anchored Commentary that moves or is removed with that item. A stale command returns structured `stale_queue_revision` data; the DJ may refresh and make one new append-only attempt only if Queue health remains below target, otherwise the job is superseded. The DJ can call `get_queue()` and `search_music()` in parallel before deciding what to queue. `play_now` is available only during an active Listener interaction that explicitly requests immediate playback; autonomous runs queue rather than interrupt.
 
 The agent should not receive raw yt-dlp arguments, temporary URLs, database access, or a generic shell tool.
 
