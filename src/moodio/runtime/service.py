@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Awaitable, Callable
@@ -71,6 +71,16 @@ _OPENAI_AUDIO_ENV_KEYS = {
 }
 _DEFAULT_QUEUE_TARGET = 10
 _DEFAULT_QUEUE_LOW_WATERMARK = 3
+_FEED_EVENT_PREFIXES = (
+    "queue.",
+    "playback.",
+    "favorites.",
+    "profile.",
+    "task.",
+    "program.",
+    "provider.error",
+    "agent.turn.",
+)
 
 
 def _seed_now_playing() -> QueueItem:
@@ -184,6 +194,7 @@ class RuntimeService:
         self._span_counter: int = 0
         self._weather_task: asyncio.Task | None = None
         self._queue_refill_task: asyncio.Task | None = None
+        self._last_editorial_pulse_at: datetime | None = None
         self._seed_store()
         self.journal.save_snapshot(self.station_state.model_dump(mode="json"))
 
@@ -270,6 +281,7 @@ class RuntimeService:
                 await asyncio.sleep(600)
                 await self.ensure_queue_seeded(reason="cadence")
                 await self.run_due_tasks()
+                await self._maybe_editorial_pulse()
         except asyncio.CancelledError:
             pass
 
@@ -293,6 +305,21 @@ class RuntimeService:
             updated.append(self.task_store.advance(task))
             await self.broadcast("task.completed", {"task_id": task.task_id})
         self.task_store.save(updated)
+
+    async def _maybe_editorial_pulse(self) -> None:
+        if self.station_state.status != "playing":
+            return
+        now = datetime.now(timezone.utc)
+        if self._last_editorial_pulse_at and now - self._last_editorial_pulse_at < timedelta(hours=1):
+            return
+        self._last_editorial_pulse_at = now
+        try:
+            await asyncio.wait_for(
+                self._run_agent("[editorial pulse] Quietly inspect the station and only queue useful follow-ups."),
+                timeout=20,
+            )
+        except (asyncio.TimeoutError, Exception) as exc:
+            await self.broadcast("provider.error", {"provider": "scheduler", "action": "editorial_pulse.failed", "error": str(exc)})
 
     def import_listener_preferences(self, profile_text: str, *, source: str = "apple_music") -> ListenerPreferences:
         seed_queries = _seed_queries_from_profile_text(profile_text)
@@ -430,7 +457,8 @@ class RuntimeService:
         return f"{self._trace_id}-{self._span_counter:04d}"
 
     async def broadcast(self, event: str, payload: dict) -> None:
-        self.journal.append(event, payload)
+        if event.startswith(_FEED_EVENT_PREFIXES):
+            self.journal.append(event, payload)
         if event in {"station.state.updated", "queue.updated"}:
             self.journal.save_snapshot(self.station_state.model_dump(mode="json"))
         envelope = {
