@@ -55,11 +55,11 @@ Use these terms consistently:
 | Journey | Station-state contract | Agent/tool contract | Durable-state contract |
 | --- | --- | --- | --- |
 | 1. Conversation | Queue item sequence and revision are exact baseline; current track is unchanged. `status` may briefly become `speaking`. | Must not call search or any Queue/transport/profile mutation tool. `read_listener_profile` is allowed only for the taste-reflection step. | Exactly four Listener/assistant conversation pairs; profile, tasks, and play history unchanged. |
-| 2. Specific request | Step 1 adds exactly two `dj` Music items and preserves current playback. Step 3 changes current track only through explicit immediate-play intent. | Step 1 must observe Queue, search, inspect, then queue twice. Step 2 must not search/mutate. Step 3 must use `play_now` only after the explicit request. | Conversation records each turn; feed/trace explain every Queue/transport delta. Profile unchanged unless the Listener separately asks for memory. |
+| 2. Specific request | Step 1 adds exactly two `dj` Music items and preserves current playback. Step 3 changes current track only through explicit immediate-play intent. | Step 1 must observe Queue, search, inspect, then use `queue_music_set` for the two-item request. Step 2 must not search/mutate. Step 3 must use `play_now` only after the explicit request. | Conversation records each turn; feed/trace explain every Queue/transport delta. Profile unchanged unless the Listener separately asks for memory. |
 | 3. Direct control | Direct queue adds one `listener` item in priority order; pause sets `idle`; play sets `playing`. | Steps 2–4 must not invoke an agent run. The later chat run may read state but must not mutate Queue/transport. | Direct controls create durable Station events and queued internal-event context; no chat item until step 5. |
-| 4. Explicit memory | Step 1 preserves Queue, current track, and transport. Step 3 adds exactly two `dj` items without immediate playback. | Step 1 must read then update profile once; step 3 must search/inspect/queue from current state and profile. | One concise `profile.updated` record with reason; no raw transcript copied into profile. |
+| 4. Explicit memory | Step 1 preserves Queue, current track, and transport. Step 3 adds exactly two `dj` items without immediate playback. | Step 1 must read then update profile once; step 3 must search/inspect and use `queue_music_set` from current state and profile. | One concise `profile.updated` record with reason; no raw transcript copied into profile. |
 | 5. Autonomous health | If Queue is healthy, no Station mutation. If thin, only append DJ Music; never alter Listener-priority order or transport. | Maintenance may read state/profile and search/inspect/queue. It must not call `play_now`, `play`, or `pause`. | Playback trigger and resulting work are traceable; background final text is not appended as a visible conversation reply. |
-| 6. Import | Import alone does not mechanically choose Queue items. Any later additions are normal `dj` Music items. | Maintenance may read the imported profile and decide to search/queue; it must not use a legacy batch/refill helper. | Derived profile and compact import summary persist; source XML and raw Apple media references do not. |
+| 6. Import | Import leaves Queue, transport, and Station session unchanged. | A dedicated one-shot import-mining workflow creates the profile and seeds; the continuous DJ does not receive import evidence or run because of it. | Derived profile, seed queries, and compact import summary persist; source XML and raw Apple media references do not. |
 | 7. Implicit learning | Before the evidence threshold, Queue/profile remain unchanged by a single weak signal. After the threshold, Queue need not change. | The learning run must read profile and update it at most once; it must not search or play merely to justify learning. | Exactly one cautious profile update after aligned evidence; the one-signal negative control has none. |
 | 8. Co-programming | Listener item ID, origin, and priority position remain exact across all steps. Pause remains idle until direct play. | DJ may append/replace only `dj` items after inspecting Queue; must not replace/reorder the Listener item or call transport tools while paused. | Direct actions are retained as internal context; conversation captures only natural-language turns. |
 | 9. In-flight race | Direct item is committed once, retained, and remains ahead of autonomous DJ additions. | Direct queue bypasses agent lane. A stale DJ Queue result is rejected; at most one refreshed append-only attempt is allowed. | Feed/session preserve both causally ordered actions; one final assistant response for the original Listener message. |
@@ -89,7 +89,7 @@ uv run moodio clear-conversation --yes
 
 | Step | Command | Ideal Station result |
 | --- | --- | --- |
-| 1 | `uv run moodio command "Queue exactly two upbeat Of Monsters and Men songs for later. Don't interrupt what is playing."` | The DJ reads the Queue, searches the provider, inspects candidates, and creates exactly two new DJ Music items. Current playback does not change. |
+| 1 | `uv run moodio command "Queue exactly two upbeat Of Monsters and Men songs for later. Don't interrupt what is playing."` | The DJ reads the Queue, searches the provider, inspects candidates, and uses `queue_music_set` to create exactly two new DJ Music items. Current playback does not change. |
 | 2 | `uv run moodio command "Why did you choose those?"` | A concise explanation grounded in the returned/queued candidates. It does not search again or add more music. |
 | 3 | `uv run moodio command "Start the first one now."` | The DJ performs an immediate-play action for the intended candidate. Now playing changes; the Queue is updated consistently. |
 
@@ -117,7 +117,7 @@ uv run moodio clear-conversation --yes
 | --- | --- | --- |
 | 1 | `uv run moodio command "Remember this: after 10pm, I prefer mostly instrumental music and very little talking."` | The DJ reads then updates the Listener profile with a concise, revisable note and a reason. No Queue or transport mutation is necessary. |
 | 2 | `uv run moodio inspect` | The profile contains the new instruction; Queue state is unchanged from before step 1. |
-| 3 | `uv run moodio command "It's late. Queue two calm instrumental tracks for later."` | The DJ uses the profile plus the request to search, inspect, and add two appropriate DJ items. It does not automatically start them. |
+| 3 | `uv run moodio command "It's late. Queue two calm instrumental tracks for later."` | The DJ uses the profile plus the request to search, inspect, and add two appropriate DJ items with `queue_music_set`. It does not automatically start them. |
 
 **Pass conditions:** “remember” creates one understandable profile revision, not a raw conversation dump. The later request demonstrates that the preference is used as guidance, not as an absolute rule that prevents all vocals forever.
 
@@ -135,17 +135,17 @@ uv run moodio clear-conversation --yes
 
 **Pass conditions:** there is no fixed query expansion, provider-specific refill helper, or preset track choice. The resulting Queue action—if any—is attributable to normal DJ tool calls in trace.
 
-## 6. Import starts a personal first move, not a canned playlist
+## 6. Import mines a personal profile without entering the DJ session
 
-**Purpose:** Apple Music import creates taste context and wakes the DJ without retaining source media or mechanically expanding genres.
+**Purpose:** Apple Music import creates a detailed, editable taste profile without retaining source media or turning a one-time import into continuous DJ-session context.
 
 | Step | Command | Ideal Station result |
 | --- | --- | --- |
-| 1 | `uv run moodio preferences import-apple-music ./Library.xml` | The import response reports the derived summary and that maintenance was requested. The source XML is not retained. |
-| 2 | Wait for the maintenance run; inspect `uv run moodio inspect` and `uv run moodio trace --limit 100`. | The profile contains a concise import-derived summary. The DJ can inspect it and decide whether to seed a small Queue. |
-| 3 | `uv run moodio now` | Any queued tracks are real provider candidates chosen through standard DJ tools; there are no fixed suffixes such as `SoundCloud`, `dream pop`, or `rainy day`. |
+| 1 | `uv run moodio preferences import-apple-music ./Library.xml` | The import response includes a materialized profile revision, concrete seed queries, and `maintenance_requested: false`. The source XML is not retained. |
+| 2 | `uv run moodio preferences show` and `uv run moodio preferences history` | The profile is detailed, provisional, versioned, and includes explicit instructions, taste notes, favorite artists/albums, evidence, and discovery starting points. |
+| 3 | `uv run moodio now` and `uv run moodio trace --limit 100` | Queue/transport are unchanged by import. The Station-session trace contains no raw import evidence or import-triggered DJ turn. |
 
-**Pass conditions:** import evidence becomes profile context. A resulting Queue is personal and provider-validated, but a no-op is acceptable when the DJ lacks sufficient confidence or the Queue is already healthy.
+**Pass conditions:** a bounded local evidence packet is sent only to the dedicated one-shot mining workflow. The workflow chooses the profile conclusions and seeds; the XML and evidence packet do not become durable Station-session context. Any later Queue work is an ordinary, separately triggered DJ run.
 
 ## 7. Implicit taste learning requires a pattern, not one click
 
@@ -157,7 +157,7 @@ uv run moodio clear-conversation --yes
 
 | Step | Command | Ideal Station result |
 | --- | --- | --- |
-| 1 | Ask the DJ to queue a varied, upbeat set: `uv run moodio command "Queue three energetic electronic tracks for later."` | The DJ makes three DJ-origin Music items through normal search/inspect/queue tools. No profile update is required yet. |
+| 1 | Ask the DJ to queue a varied, upbeat set: `uv run moodio command "Queue three energetic electronic tracks for later."` | The DJ makes three DJ-origin Music items through normal search/inspect and one `queue_music_set` call. No profile update is required yet. |
 | 2 | Use direct control to skip two of those tracks as they become current: `uv run moodio next` twice. | Each skip takes effect immediately and is recorded as a Listener-origin playback signal. A single skip or favorite by itself must **not** rewrite the profile. |
 | 3 | Search and queue two calmer instrumental choices directly: `uv run moodio search "quiet instrumental piano"`, then `uv run moodio queue <first-ref> --revision <revision>` and repeat with another result. | The Listener selections appear in click order and are durable evidence, not a conversational request to the DJ. |
 | 4 | Wake autonomous work: `uv run moodio playback near_end`, then wait for maintenance. | The DJ reviews the accumulated events, profile, Queue, and recent context. With the repeated skip/selection pattern, it should call `update_listener_profile` with a cautious, concise taste note. |
@@ -171,7 +171,7 @@ uv run moodio clear-conversation --yes
 
 | Step | Command | Ideal Station result |
 | --- | --- | --- |
-| 1 | `uv run moodio command "Build a three-track warm, acoustic evening run for later."` | The DJ searches, inspects, and queues three DJ-origin Music items. It does not start playback. |
+| 1 | `uv run moodio command "Build a three-track warm, acoustic evening run for later."` | The DJ searches, inspects, and creates three DJ-origin Music items with `queue_music_set`. It does not start playback. |
 | 2 | `uv run moodio search "José González Heartbeats"`, then `uv run moodio queue <playback-ref> --revision <revision>` | The direct Listener selection enters the priority segment; no agent run is necessary. |
 | 3 | `uv run moodio command "Keep the rest cohesive around the song I just added, but don't remove or replace it."` | The DJ reads Queue state and sees the Listener-origin item/event. It may append suitable DJ music or replace only DJ-origin items; it must preserve the Listener item and its position. |
 | 4 | `uv run moodio pause` followed by `uv run moodio playback near_end` | The pause applies immediately. A maintenance wake may inspect state, but cannot resume transport or surface audible Commentary while paused. |

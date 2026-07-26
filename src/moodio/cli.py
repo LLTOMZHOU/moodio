@@ -498,6 +498,7 @@ def _parser() -> argparse.ArgumentParser:
     _add_server_options(play_now)
     play_now.add_argument("track_ref")
     play_now.add_argument("--reason", default="CLI play now")
+    play_now.set_defaults(command_name="play_now")
 
     favorite = subcommands.add_parser("favorite", help="Favorite the current track, or an explicit track id")
     _add_server_options(favorite)

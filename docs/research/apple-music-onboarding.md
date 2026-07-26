@@ -11,7 +11,7 @@ The first-start flow should be:
 1. Explain that Moodio can learn an initial, editable impression from a selected Apple Music playlist or library export.
 2. Let the Listener choose a representative playlist export (the best default) or a full-library export (optional).
 3. Parse the XML locally. Extract only track and playlist metadata needed for the import: title, artist, album, genre, play count, rating/favorite signal when present, date added, and playlist membership/order.
-4. Derive a short provisional note in `listener-profile.md` and a compact list of seed queries. Keep explicit Listener instructions separate and higher priority.
+4. Build a bounded, descriptive evidence packet locally, then run a dedicated one-shot import-mining prompt to synthesize the provisional `listener-profile.md` note and compact seed queries. Keep explicit Listener instructions separate and higher priority.
 5. Use several seed queries to find real candidates through the normal YouTube provider, validate availability, and program only a small first queue (for example, three to five tracks). The Apple export never provides playback to Moodio.
 6. Do not retain the original XML by default. Persist the derived profile text, a small import summary/provenance record, and ordinary Station events. The Listener can re-import or replace the initial impression.
 
@@ -30,15 +30,15 @@ Playlist membership and ordering are strong enough to form seed queries; library
 3. repeated artists/albums across selected playlists;
 4. date-added recency as a weak tiebreaker.
 
-The generated profile text should say that it is an *initial observation from an Apple Music import*, name the evidence at a high level, and stay easy to correct or delete. It must not turn a one-off import into rigid rules or infer sensitive traits.
+The generated profile text should say that it is an *initial observation from an Apple Music import*, name concrete musical evidence (for example favorites, repeated listening, artists, albums, styles, and playlist groupings), and stay easy to correct or delete. It must not turn a one-off import into rigid rules or infer sensitive traits. The local parser may rank and bound evidence, but a dedicated one-shot import-mining prompt—not deterministic importer code or the continuous DJ session—decides which patterns deserve a Taste note and which seed queries are useful.
 
 ## Initial queue policy
 
 The import should not dump an entire Apple playlist into the Station. Instead it should produce a diversified seed set (distinct artists/styles where possible), then use the normal provider path:
 
 ```text
-Apple Music XML -> normalized taste signals -> seed queries
-    -> provider search -> availability validation -> 3-5 Queue music items
+Apple Music XML -> bounded descriptive evidence -> one-shot import-mining prompt
+    -> editable profile + seed queries -> provider search -> availability validation -> 3-5 Queue music items
 ```
 
 This preserves Moodio's provider boundary: the importer supplies preference evidence; the provider supplies the current playable candidate; Station control owns queue mutation. If matching fails or candidate playback is unavailable, skip it and try another seed rather than attempting to use Apple media URLs or alter provider restrictions.
@@ -65,7 +65,7 @@ class TasteImport(Protocol):
     def apply(self, source: Path, selection: ImportSelection) -> ImportedTaste: ...
 ```
 
-`inspect` is local and read-only; it returns playlist names/counts and a compact preview without copying the file. `apply` derives taste notes and seed queries from the Listener's selection, writes only the derived Station state, and returns the exact initial seeds for normal provider resolution. This keeps the first implementation small while leaving room for a future MusicKit adapter.
+`inspect` is local and read-only; it returns playlist names/counts and a compact preview without copying the file. `apply` derives a bounded evidence packet from the Listener's selection, asks a one-shot import-mining workflow to write the taste notes and seed queries, then persists only that derived Station state. This keeps the first implementation small while leaving room for a future MusicKit adapter.
 
 ## Open product choices
 

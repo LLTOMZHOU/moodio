@@ -34,6 +34,7 @@ from moodio.info import (
     WebSearchProvider,
 )
 from moodio.imports.apple_music import import_apple_music_xml
+from moodio.imports.apple_music_synthesis import synthesize_apple_music_profile
 from moodio.music.providers import MusicProvider, ProviderTrack
 from moodio.music.soundcloud import SoundCloudProvider
 from moodio.music.youtube import YouTubeProvider
@@ -141,6 +142,14 @@ def _seed_transcript() -> TranscriptSegment:
     )
 
 
+def _listener_priority_prefix_length(queue: list[ProgramItem]) -> int:
+    """Count the protected Listener-selected segment at the front of the Queue."""
+    for index, item in enumerate(queue):
+        if item.origin != "listener":
+            return index
+    return len(queue)
+
+
 class RuntimeService:
     def __init__(
         self,
@@ -197,7 +206,7 @@ class RuntimeService:
         self.transcript_segments = [_seed_transcript()]
         self.favorites: set[str] = set()
         self._previous_tracks: list[QueueItem] = []
-        self._listener_priority_count = 0
+        self._listener_priority_count = _listener_priority_prefix_length(self.station_state.queue)
         self._session: Session = JsonlSession(self.station_dir / "agent-session.jsonl")
         self._agent_lane = asyncio.Lock()
         self._queue_mutation_lock = asyncio.Lock()
@@ -389,28 +398,28 @@ class RuntimeService:
         return ListenerProfileWrite(preferences=preferences, revision=revision, created=created)
 
     async def import_apple_music_export(self, content: bytes) -> dict:
-        """Apply a Listener-selected Music.app XML export without retaining it."""
+        """Mine a Listener-selected Music.app export outside the Station session."""
         imported = import_apple_music_xml(content)
-        profile_write = self.import_listener_preferences(
-            imported.profile_text,
-            source="apple_music_xml",
-            seed_queries=imported.seed_queries,
-            reason="Imported a derived taste summary from a Listener-selected Apple Music XML export.",
+        synthesis = await synthesize_apple_music_profile(
+            imported.evidence,
+            existing_profile=self._listener_profile_text(),
         )
-        preferences = profile_write.preferences
+        profile_write = self.import_listener_preferences(
+            synthesis.profile_markdown,
+            source="apple_music_synthesis",
+            seed_queries=synthesis.seed_queries,
+            reason=synthesis.reason,
+        )
         summary = {
-            "source": preferences.source,
+            "source": "apple_music_xml",
             "track_count": imported.track_count,
             "playlist_count": imported.playlist_count,
-            "top_artists": imported.top_artists,
-            "top_genres": imported.top_genres,
-            "seed_queries": imported.seed_queries,
+            "seed_queries": synthesis.seed_queries,
             "profile_revision": self.profile_revision_summary(profile_write.revision),
             "profile_changed": profile_write.created,
         }
         await self.broadcast("profile.imported", summary)
-        self._request_maintenance("profile.imported", summary)
-        return {"import": summary, "maintenance_requested": True}
+        return {"import": summary, "maintenance_requested": False}
 
     def _seed_store(self) -> None:
         recent_context = self.state_store.recent_context(limit=1)
@@ -917,6 +926,40 @@ class RuntimeService:
                 reason=reason,
             )
 
+    async def queue_tracks(
+        self,
+        tracks: list[QueueItem],
+        *,
+        origin: str = "dj",
+        reason: str = "Station programming",
+        expected_revision: int | None = None,
+    ) -> dict:
+        """Commit a DJ-programmed set without another Queue mutation interleaving.
+
+        The supplied ordering is the listener-facing ordering. Individual queue events are
+        still emitted so existing clients can reconcile normally, but the revision guard is
+        checked once for the complete set.
+        """
+        async with self._queue_mutation_lock:
+            if expected_revision is not None and expected_revision != self.station_state.queue_revision:
+                return {
+                    "accepted": False,
+                    "reason": "stale_queue_revision",
+                    **self._queue_payload(),
+                }
+            for track in reversed(tracks):
+                await self._queue_track_locked(
+                    track,
+                    listener_priority=False,
+                    origin=origin,
+                    reason=reason,
+                )
+            return {
+                "accepted": True,
+                "revision": self.station_state.queue_revision,
+                "queue": self._queue_payload()["queue"],
+            }
+
     async def _queue_track_locked(
         self,
         track: QueueItem,
@@ -932,7 +975,9 @@ class RuntimeService:
             self.station_state.queue.insert(self._listener_priority_count, item)
             self._listener_priority_count += 1
         else:
-            self.station_state.queue.insert(0, item)
+            # The DJ may program around Listener choices but never jump ahead of
+            # their protected next-up segment.
+            self.station_state.queue.insert(self._listener_priority_count, item)
         self._record_play_if_new(track)
 
         self._bump_queue_revision()
@@ -983,6 +1028,7 @@ class RuntimeService:
             self.station_state.queue.insert(0, ProgramItem.music(
                 self.station_state.now_playing, origin="listener", reason="Previous track"
             ))
+            self._listener_priority_count += 1
             self.station_state.now_playing = previous
             self.state_store.record_play(track_id=previous.track_id, title=previous.title)
 

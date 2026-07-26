@@ -201,6 +201,40 @@ class StationControl:
             return self._stale_queue_result()
         return {**result, "track": track.model_dump(mode="json"), "reason": reason}
 
+    async def queue_music_set(
+        self,
+        candidate_ids: list[str],
+        reason: str = "Station programming",
+        *,
+        expected_revision: int,
+    ) -> dict:
+        """Queue one inspected, ordered DJ set under one observed Queue revision."""
+        if not candidate_ids:
+            raise ValueError("candidate_ids must not be empty")
+        uninspected = [candidate_id for candidate_id in candidate_ids if candidate_id not in self._inspected_candidate_ids]
+        if uninspected:
+            return {
+                "accepted": False,
+                "error": "candidate_not_inspected",
+                "candidate_ids": uninspected,
+            }
+        if self._observed_queue_revision != expected_revision:
+            return {
+                "accepted": False,
+                "error": "queue_not_observed",
+                "revision": self.runtime.station_state.queue_revision,
+            }
+        tracks = [await self.runtime.resolve_candidate(candidate_id) for candidate_id in candidate_ids]
+        result = await self.runtime.queue_tracks(
+            [track.to_queue_item() for track in tracks],
+            origin="dj",
+            reason=reason,
+            expected_revision=expected_revision,
+        )
+        if not result.get("accepted"):
+            return self._stale_queue_result()
+        return {**result, "tracks": [track.model_dump(mode="json") for track in tracks], "reason": reason}
+
     async def queue_commentary(
         self,
         text: str,
@@ -318,16 +352,42 @@ class StationControl:
 
     async def play_now(self, candidate_id: str, reason: str = "Listener selection") -> dict:
         # Resolve first: an unavailable result must not disturb current playback.
+        # A request can name an item already in the Queue (for example, “start the
+        # first one now”). Promote that item rather than enqueueing a duplicate and
+        # immediately consuming the duplicate.
         track = await self.runtime.resolve_candidate(candidate_id)
-        await self.runtime.queue_track(
-            track.to_queue_item(),
-            listener_priority=True,
-            origin="listener",
-            reason=reason,
-        )
-        result = await self.runtime.next_track()
-        await self.runtime.play()
-        return {**result, "track": track.model_dump(mode="json"), "reason": reason}
+        async with self.runtime._queue_mutation_lock:
+            queued_index = next(
+                (
+                    index
+                    for index, item in enumerate(self.runtime.station_state.queue)
+                    if item.kind == "music" and item.track and item.track.playback_ref == track.playback_ref
+                ),
+                None,
+            )
+            if queued_index is not None:
+                self.runtime.station_state.queue.pop(queued_index)
+                if queued_index < self.runtime._listener_priority_count:
+                    self.runtime._listener_priority_count -= 1
+
+            self.runtime._previous_tracks.append(self.runtime.station_state.now_playing)
+            self.runtime.station_state.now_playing = track.to_queue_item()
+            self.runtime.state_store.record_play(track_id=track.playback_ref, title=track.title)
+            self.runtime.station_state = self.runtime.station_state.model_copy(update={"status": "playing"})
+            self.runtime._bump_queue_revision()
+
+            queue_payload = self.runtime._queue_payload()
+            await self.runtime.broadcast("queue.updated", queue_payload)
+            await self.runtime.broadcast("station.state.updated", self.runtime.station_state.model_dump())
+            self.runtime._queue_internal_event("playback.resumed", {})
+
+        return {
+            "accepted": True,
+            "now_playing": self.runtime.station_state.now_playing.model_dump(),
+            "queue": queue_payload["queue"],
+            "track": track.model_dump(mode="json"),
+            "reason": reason,
+        }
 
     async def find_and_play_soundcloud(self, query: str) -> dict:
         search_query = query if "soundcloud" in query.lower() else f"{query} SoundCloud"

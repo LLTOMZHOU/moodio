@@ -58,12 +58,13 @@ You MUST call tools in these situations — do NOT just talk about doing them:
 ## Finding and playing music
 
 - **search_music**: Your discovery tool for artists, songs, genres, moods, activities, and eras. Its default results favor track-length music; use an explicit duration cap only when the listener asks for one. Recency is best-effort.
-- **queue_music**: Queue an inspected result. Use it for autonomous programming and for Listener requests that are not explicitly immediate.
+- **queue_music**: Queue one inspected result. Use it for autonomous programming and for Listener requests that are not explicitly immediate.
+- **queue_music_set**: Queue an inspected, ordered set of two or more results as one revisioned operation. Use it whenever the Listener asks for a defined multi-track set; do not simulate a set with parallel queue_music calls.
 - **replace_queue_music**: Replace one inspected, DJ-programmed upcoming music item in place. Use it when the Listener asks to replace or swap a specific part of the Queue while preserving the other items. Never replace a Listener-selected item.
 - **play_now**: Resolve and start an inspected result immediately. Use it only when the Listener explicitly asks to play something now.
 - Normal programming means songs, not extended videos: choose a candidate around thirty minutes or shorter whenever one is available. Only choose a longer mix, DJ set, ambience stream, or live session when the Listener asks for that format or ordinary tracks genuinely are not available. A matching title is not enough reason to queue a multi-hour item.
 - If a search fails, try a different query. Don't give up after one attempt — rephrase, broaden, or shift the angle.
-- When the Listener asks for a defined set (for example, "exactly three"), use tools to build that set — do not answer with an imagined list. First inspect the Queue. If they ask to preserve particular items, replace only the requested slot in place; otherwise, make the requested additions explicitly and explain what changed.
+- When the Listener asks for a defined set (for example, "exactly three"), use tools to build that set — do not answer with an imagined list. First inspect the Queue, then use queue_music_set with exactly the requested number of candidates. If they ask to preserve particular items, replace only the requested slot in place; otherwise, make the requested additions explicitly and explain what changed.
 
 ## When to use web_search
 
@@ -183,12 +184,16 @@ def build_station_tools(control: StationControl) -> list:
     async def search_music(
         query: str,
         limit: int = 10,
-        max_duration_seconds: int | None = None,
+        max_duration_minutes: int | None = None,
         prefer_released_after: str | None = None,
     ) -> dict:
         """Search the music provider and return queueable candidates. Default ranking strongly favors ordinary
-        song-length results; pass max_duration_seconds only for an explicit hard limit. Release recency is best-effort."""
-        preferences = {"max_duration_seconds": max_duration_seconds, "prefer_released_after": prefer_released_after}
+        song-length results; pass max_duration_minutes only for an explicit hard limit (for example, 8 means no more
+        than eight minutes). Do not use 30 to mean thirty minutes: the unit is minutes. Release recency is best-effort."""
+        preferences = {
+            "max_duration_seconds": max_duration_minutes * 60 if max_duration_minutes is not None else None,
+            "prefer_released_after": prefer_released_after,
+        }
         return await control.search_music(query, limit=limit, preferences={key: value for key, value in preferences.items() if value is not None})
 
     @function_tool
@@ -201,8 +206,16 @@ def build_station_tools(control: StationControl) -> list:
         """Queue a previously searched and successfully inspected candidate. Use its exact playback_ref.
         Call get_queue in this same run first and use its revision. If this returns candidate_not_inspected,
         queue_not_observed, or stale_queue_revision, nothing changed; follow the indicated recovery and make
-        at most one fresh append-only attempt. Do not claim success unless accepted is true."""
+        at most one fresh append-only attempt. Do not claim success unless accepted is true. For multiple tracks,
+        use queue_music_set instead of parallel queue calls."""
         return await control.queue_music(candidate_id, reason, expected_revision=based_on_queue_revision)
+
+    @function_tool
+    async def queue_music_set(candidate_ids: list[str], reason: str, based_on_queue_revision: int) -> dict:
+        """Queue an inspected, ordered set of two or more tracks as one revisioned operation.
+        Call get_queue in this run first and use its revision. Use this for a defined multi-track request;
+        it either queues the whole set in the supplied order or reports that no Queue change was made."""
+        return await control.queue_music_set(candidate_ids, reason, expected_revision=based_on_queue_revision)
 
     @function_tool
     async def replace_queue_music(
@@ -309,6 +322,7 @@ def build_station_tools(control: StationControl) -> list:
         search_music,
         inspect_candidates,
         queue_music,
+        queue_music_set,
         replace_queue_music,
         queue_commentary,
         play_now,

@@ -4,6 +4,8 @@
 .claude/
 .uv-cache/
 .webui_secret_key
+# Personal Music.app exports are local onboarding inputs, never repository data.
+apple_music.xml
 moodio.db
 var/
 .lazyweb/
