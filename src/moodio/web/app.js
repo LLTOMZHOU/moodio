@@ -194,10 +194,6 @@ function appendStreamDelta(delta) {
   if (followStream) container.scrollTop = container.scrollHeight;
 }
 
-function resetStreamMessage() {
-  clearStreamingMessage({ render: true });
-}
-
 function renderChat({ scrollToBottom = true } = {}) {
   const container = byId("chat-messages");
   container.innerHTML = "";
@@ -313,8 +309,7 @@ function connectEvents() {
     }
     if (message.event === "queue.updated") refreshState();
     if (message.event === "agent.response.delta") appendStreamDelta(message.payload.delta);
-    if (message.event === "agent.response.reset") resetStreamMessage();
-    if (message.event === "agent.turn.failed") resetStreamMessage();
+    if (message.event === "agent.turn.failed") clearStreamingMessage({ render: true });
     if (message.event === "conversation.message.saved") conversationMessageSaved(message.payload.item);
     if (message.event === "conversation.cleared") {
       state.chatMessages = [];
@@ -324,7 +319,7 @@ function connectEvents() {
       renderChat();
     }
   };
-  ["station.state.updated", "tts.audio.ready", "tts.audio.failed", "queue.updated", "agent.response.delta", "agent.response.reset", "agent.turn.failed", "conversation.message.saved", "conversation.cleared"].forEach((name) => {
+  ["station.state.updated", "tts.audio.ready", "tts.audio.failed", "queue.updated", "agent.response.delta", "agent.turn.failed", "conversation.message.saved", "conversation.cleared"].forEach((name) => {
     events.addEventListener(name, handleMessage);
   });
   events.addEventListener("error", () => setMessage("reconnecting live updates…"));

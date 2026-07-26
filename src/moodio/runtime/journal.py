@@ -117,7 +117,7 @@ class StationJournal:
             entry
             for entry in self._all_from(self.feed_path)
             if entry.get("event")
-            not in {"agent.turn.started", "agent.turn.completed", "agent.turn.failed", "agent.turn.correcting"}
+            not in {"agent.turn.started", "agent.turn.completed", "agent.turn.failed"}
         ]
         self._rewrite_jsonl(self.feed_path, retained_feed)
 

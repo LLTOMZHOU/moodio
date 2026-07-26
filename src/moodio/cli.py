@@ -279,7 +279,7 @@ def _summarize_payload(event_name: str, payload: dict) -> str:
             return (
                 f"total={timing.get('total_ms')}ms "
                 f"ttft={timing.get('time_to_first_token_ms')}ms "
-                f"resets={timing.get('response_resets', 0)} output=\"{output}\""
+                f"output=\"{output}\""
             )
         return f"output=\"{output}\""
 
