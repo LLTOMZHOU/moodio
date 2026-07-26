@@ -300,22 +300,6 @@ class StationControl:
         await self.runtime.play()
         return {**result, "track": track.model_dump(mode="json"), "reason": reason}
 
-    async def find_and_queue_music_multiple(self, queries: list[str]) -> dict:
-        queued: list[dict] = []
-        failed: list[str] = []
-        for query in queries:
-            try:
-                search = await self.search_music(query, limit=5)
-                candidate = next((item for item in search["results"] if item["kind"] in {"song", "video"}), None)
-                if candidate is None:
-                    failed.append(query)
-                    continue
-                result = await self.queue_music(candidate["playback_ref"], reason="Station refill")
-                queued.append({"query": query, "title": result["track"]["title"], "track_id": candidate["playback_ref"]})
-            except Exception:
-                failed.append(query)
-        return {"queued": queued, "failed": failed, "total_queued": len(queued)}
-
     async def find_and_play_soundcloud(self, query: str) -> dict:
         search_query = query if "soundcloud" in query.lower() else f"{query} SoundCloud"
         await self.runtime.broadcast("agent.tool.call", {
@@ -374,68 +358,6 @@ class StationControl:
             "error_type": "ValueError",
         })
         raise ValueError(f"no playable SoundCloud result found for: {query}")
-
-    async def find_and_queue_soundcloud_multiple(self, queries: list[str]) -> dict:
-        await self.runtime.broadcast("agent.tool.call", {
-            "tool": "find_and_queue_soundcloud_multiple",
-            "arguments": {"queries": queries},
-        })
-        queued: list[dict] = []
-        failed: list[str] = []
-
-        for query in queries:
-            search_query = query if "soundcloud" in query.lower() else f"{query} SoundCloud"
-            await self.runtime.broadcast("provider.request", {
-                "provider": "soundcloud_discovery",
-                "action": "search.started",
-                "query": search_query,
-                "mode": "queue_multiple",
-            })
-            search = self.runtime.web_search_provider.search(search_query, limit=5)
-            found = False
-            for result in search.results:
-                if not _is_soundcloud_playable_candidate(result.url):
-                    await self.runtime.broadcast("provider.request", {
-                        "provider": "soundcloud_discovery",
-                        "action": "candidate.skipped",
-                        "query": search_query,
-                        "url": result.url,
-                        "reason": "not_individual_track",
-                    })
-                    continue
-                try:
-                    provider_track = await self.soundcloud_provider.resolve_embed_url(result.url)
-                except Exception as exc:
-                    await self.runtime.broadcast("provider.error", {
-                        "provider": "soundcloud_discovery",
-                        "action": "resolve.failed",
-                        "query": search_query,
-                        "url": result.url,
-                        "error": str(exc),
-                        "error_type": type(exc).__name__,
-                    })
-                    continue
-                await self.runtime.queue_track(provider_track.to_queue_item())
-                queued.append({"query": query, "title": provider_track.title, "track_id": provider_track.playback_ref})
-                await self.runtime.broadcast("provider.request", {
-                    "provider": "soundcloud_discovery",
-                    "action": "search.completed",
-                    "query": search_query,
-                    "chosen_url": result.url,
-                    "title": provider_track.title,
-                    "result_count": len(search.results),
-                })
-                found = True
-                break
-            if not found:
-                failed.append(query)
-
-        result = {"queued": queued, "failed": failed, "total_queued": len(queued)}
-        await self.runtime.broadcast("agent.tool.result", {
-            "tool": "find_and_queue_soundcloud_multiple",
-            "result": result,
-        })
-        return result
 
     async def queue_track(self, track: QueueItem) -> dict:
         return await self.runtime.queue_track(track)

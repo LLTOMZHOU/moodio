@@ -478,7 +478,7 @@ byId("apple-music-import-form").addEventListener("submit", async (event) => {
   const file = byId("apple-music-import-file").files?.[0];
   if (!file) return;
   try {
-    setMessage("Importing taste signals and finding a few opening tracks…");
+    setMessage("Importing taste signals for moodio to review…");
     const response = await fetch("/api/preferences/apple-music-xml", {
       method: "POST",
       headers: { "content-type": file.type || "application/xml" },
@@ -486,8 +486,7 @@ byId("apple-music-import-form").addEventListener("submit", async (event) => {
     });
     if (!response.ok) throw new Error((await response.json()).detail || "Apple Music import failed");
     const result = await response.json();
-    const queued = result.queue?.total_queued || 0;
-    setMessage(`Imported ${result.import.track_count} tracks and queued ${queued} opening picks.`);
+    setMessage(`Imported ${result.import.track_count} tracks. Moodio is reviewing them for its next programming move.`);
     event.target.reset();
     byId("apple-music-import-name").textContent = "No file selected";
     await refreshState();

@@ -72,7 +72,6 @@ _OPENAI_AUDIO_ENV_KEYS = {
     "ELEVENLABS_MODEL",
     "ELEVENLABS_OUTPUT_FORMAT",
 }
-_DEFAULT_QUEUE_TARGET = 10
 _DEFAULT_QUEUE_LOW_WATERMARK = 3
 _FEED_EVENT_PREFIXES = (
     "queue.",
@@ -165,9 +164,6 @@ class RuntimeService:
         self.web_search_provider = web_search_provider or NoopWebSearchProvider()
         self.weather_provider = weather_provider or StaticWeatherProvider()
         self.soundcloud_provider = soundcloud_provider or SoundCloudProvider()
-        # An explicitly injected SoundCloud provider keeps old test/dev setups working;
-        # normal construction and the environment factory use YouTube.
-        self._legacy_soundcloud_refill = music_provider is None and soundcloud_provider is not None
         self.music_provider = music_provider or YouTubeProvider()
         self._candidates: dict[str, ProviderTrack] = {}
         self.tts_cache_dir = Path(tts_cache_dir)
@@ -200,7 +196,8 @@ class RuntimeService:
         self._trace_id: str = ""
         self._span_counter: int = 0
         self._weather_task: asyncio.Task | None = None
-        self._queue_refill_task: asyncio.Task | None = None
+        self._maintenance_task: asyncio.Task | None = None
+        self._maintenance_wake = asyncio.Event()
         self._last_editorial_pulse_at: datetime | None = None
         self._seed_store()
         self.journal.ensure_conversation_history()
@@ -214,7 +211,7 @@ class RuntimeService:
         """
         await self._startup_turn()
         self._weather_task = asyncio.create_task(self._weather_cadence())
-        self._queue_refill_task = asyncio.create_task(self._queue_refill_cadence())
+        self._maintenance_task = asyncio.create_task(self._maintenance_cadence())
 
     async def stop(self) -> None:
         """Stop the background weather cadence."""
@@ -225,13 +222,13 @@ class RuntimeService:
             except asyncio.CancelledError:
                 pass
             self._weather_task = None
-        if self._queue_refill_task is not None:
-            self._queue_refill_task.cancel()
+        if self._maintenance_task is not None:
+            self._maintenance_task.cancel()
             try:
-                await self._queue_refill_task
+                await self._maintenance_task
             except asyncio.CancelledError:
                 pass
-            self._queue_refill_task = None
+            self._maintenance_task = None
 
     async def _startup_turn(self) -> None:
         """Generate an opening line on first load by checking weather and station state."""
@@ -260,7 +257,6 @@ class RuntimeService:
         await self._commit_moodio_message(agent_message)
         await self._apply_agent_message(agent_message)
         self._sync_persisted_play_context()
-        await self.ensure_queue_seeded(reason="startup")
         await self.run_due_tasks()
 
         await self.broadcast("agent.turn.completed", {
@@ -284,13 +280,18 @@ class RuntimeService:
         except asyncio.CancelledError:
             pass
 
-    async def _queue_refill_cadence(self) -> None:
+    async def _maintenance_cadence(self) -> None:
         try:
             while True:
-                await asyncio.sleep(600)
-                await self.ensure_queue_seeded(reason="cadence")
+                try:
+                    await asyncio.wait_for(self._maintenance_wake.wait(), timeout=600)
+                except asyncio.TimeoutError:
+                    pass
+                self._maintenance_wake.clear()
                 await self.run_due_tasks()
-                await self._maybe_editorial_pulse()
+                self._request_editorial_pulse_if_due()
+                if self._pending_internal_events:
+                    await self._run_operational_wake()
         except asyncio.CancelledError:
             pass
 
@@ -315,24 +316,35 @@ class RuntimeService:
             await self.broadcast("task.completed", {"task_id": task.task_id})
         self.task_store.save(updated)
 
-    async def _maybe_editorial_pulse(self) -> None:
+    def _request_editorial_pulse_if_due(self) -> None:
         if self.station_state.status != "playing":
             return
         now = datetime.now(timezone.utc)
         if self._last_editorial_pulse_at and now - self._last_editorial_pulse_at < timedelta(hours=1):
             return
         self._last_editorial_pulse_at = now
+
+        self._queue_internal_event(
+            "station.editorial_pulse",
+            {"reason": "active_listening_window"},
+            origin="station",
+        )
+
+    async def _run_operational_wake(self) -> None:
         try:
             await asyncio.wait_for(
-                self._run_agent("[editorial pulse] Quietly inspect the station and only queue useful follow-ups."),
+                self._run_agent("[station maintenance wake-up]"),
                 timeout=20,
             )
         except (asyncio.TimeoutError, Exception) as exc:
-            await self.broadcast("provider.error", {"provider": "scheduler", "action": "editorial_pulse.failed", "error": str(exc)})
+            await self.broadcast("provider.error", {
+                "provider": "scheduler",
+                "action": "maintenance_wake.failed",
+                "error": str(exc),
+            })
 
     def import_listener_preferences(self, profile_text: str, *, source: str = "apple_music") -> ListenerPreferences:
-        seed_queries = _seed_queries_from_profile_text(profile_text)
-        preferences = ListenerPreferences(source=source, raw_text=profile_text.strip(), seed_queries=seed_queries)
+        preferences = ListenerPreferences(source=source, raw_text=profile_text.strip(), seed_queries=[])
         self.state_store.save_listener_preferences(preferences)
         (self.station_dir / "listener-profile.md").write_text(profile_text.strip() + "\n", encoding="utf-8")
         return preferences
@@ -356,106 +368,8 @@ class RuntimeService:
             "seed_queries": imported.seed_queries,
         }
         await self.broadcast("profile.imported", summary)
-        self._queue_internal_event("profile.imported", summary)
-        queue_result = await self.ensure_queue_seeded(reason="apple_music_import", max_new_items=5)
-        return {"import": summary, "queue": queue_result}
-
-    async def ensure_queue_seeded(self, *, reason: str, max_new_items: int | None = None) -> dict:
-        if self._legacy_soundcloud_refill:
-            return await self._ensure_legacy_soundcloud_queue_seeded(reason=reason)
-        preferences = self.state_store.get_listener_preferences()
-        if preferences is None or not preferences.seed_queries:
-            await self.broadcast("provider.request", {
-                "provider": self.music_provider.key,
-                "action": "queue_refill.skipped",
-                "reason": "no_preferences",
-                "trigger": reason,
-            })
-            return {"queued": [], "failed": [], "total_queued": 0}
-
-        needed = max(0, _DEFAULT_QUEUE_TARGET - self._queued_music_count())
-        if max_new_items is not None:
-            needed = min(needed, max(0, max_new_items))
-        if needed <= 0:
-            await self.broadcast("provider.request", {
-                "provider": self.music_provider.key,
-                "action": "queue_refill.skipped",
-                "reason": "queue_full",
-                "trigger": reason,
-                "queue_size": self._queued_music_count(),
-            })
-            return {"queued": [], "failed": [], "total_queued": 0}
-
-        queries = self._candidate_queries(preferences, needed)
-        if not queries:
-            await self.broadcast("provider.request", {
-                "provider": self.music_provider.key,
-                "action": "queue_refill.skipped",
-                "reason": "no_candidate_queries",
-                "trigger": reason,
-            })
-            return {"queued": [], "failed": [], "total_queued": 0}
-
-        await self.broadcast("provider.request", {
-            "provider": self.music_provider.key,
-            "action": "queue_refill.started",
-            "trigger": reason,
-            "needed": needed,
-            "query_count": len(queries),
-        })
-        result = await StationControl(self).find_and_queue_music_multiple(queries)
-        await self.broadcast("provider.request", {
-            "provider": self.music_provider.key,
-            "action": "queue_refill.completed",
-            "trigger": reason,
-            "queued_count": result["total_queued"],
-            "failed": result["failed"],
-            "queue_size": self._queued_music_count(),
-        })
-        return result
-
-    async def _ensure_legacy_soundcloud_queue_seeded(self, *, reason: str) -> dict:
-        """Compatibility path for explicit legacy SoundCloud injection only."""
-        preferences = self.state_store.get_listener_preferences()
-        if preferences is None or not preferences.seed_queries:
-            return {"queued": [], "failed": [], "total_queued": 0}
-        needed = max(0, _DEFAULT_QUEUE_TARGET - self._queued_music_count())
-        if needed <= 0:
-            return {"queued": [], "failed": [], "total_queued": 0}
-        await self.broadcast("provider.request", {
-            "provider": "soundcloud_discovery",
-            "action": "queue_refill.started",
-            "trigger": reason,
-            "needed": needed,
-        })
-        result = await StationControl(self).find_and_queue_soundcloud_multiple(
-            self._candidate_queries(preferences, needed)
-        )
-        await self.broadcast("provider.request", {
-            "provider": "soundcloud_discovery",
-            "action": "queue_refill.completed",
-            "trigger": reason,
-            "queued_count": result["total_queued"],
-            "failed": result["failed"],
-        })
-        return result
-
-    def _candidate_queries(self, preferences: ListenerPreferences, needed: int) -> list[str]:
-        seen_refs = {
-            self.station_state.now_playing.playback_ref,
-            *(item.track.playback_ref for item in self.station_state.queue if item.kind == "music" and item.track),
-        }
-        chosen: list[str] = []
-        for query in preferences.seed_queries:
-            normalized = query.strip()
-            if not normalized or normalized in chosen:
-                continue
-            if any(normalized.lower() in ref.lower() for ref in seen_refs):
-                continue
-            chosen.append(normalized)
-            if len(chosen) >= needed:
-                break
-        return chosen
+        self._request_maintenance("profile.imported", summary)
+        return {"import": summary, "maintenance_requested": True}
 
     def _seed_store(self) -> None:
         recent_context = self.state_store.recent_context(limit=1)
@@ -775,8 +689,19 @@ class RuntimeService:
                 return await run_station_turn_streaming(input_payload, StationControl(self), self._session, on_delta)
             return await self._station_turn_runner(input_payload, StationControl(self), session=self._session)
 
-    def _queue_internal_event(self, kind: str, payload: dict[str, object]) -> None:
-        self._pending_internal_events.append({"kind": kind, "origin": "listener", "payload": payload})
+    def _queue_internal_event(
+        self,
+        kind: str,
+        payload: dict[str, object],
+        *,
+        origin: str = "listener",
+    ) -> None:
+        self._pending_internal_events.append({"kind": kind, "origin": origin, "payload": payload})
+
+    def _request_maintenance(self, kind: str, payload: dict[str, object]) -> None:
+        """Wake the autonomous DJ without deciding its music action in application code."""
+        self._queue_internal_event(kind, payload, origin="station")
+        self._maintenance_wake.set()
 
     def transcribe_audio(self, audio: bytes, *, filename: str, content_type: str) -> dict:
         if self.speech_transcriber is None:
@@ -848,7 +773,10 @@ class RuntimeService:
         await self.broadcast("station.state.updated", self.station_state.model_dump())
         self._queue_internal_event("playback.skipped", {"track_id": self.station_state.now_playing.track_id})
         if self._queued_music_count() < _DEFAULT_QUEUE_LOW_WATERMARK:
-            await self.ensure_queue_seeded(reason="queue_low")
+            self._request_maintenance("queue.low", {
+                "queue_depth": self._queued_music_count(),
+                "threshold": _DEFAULT_QUEUE_LOW_WATERMARK,
+            })
 
         return {
             "accepted": True,
@@ -965,40 +893,11 @@ class RuntimeService:
     async def ingest_playback_event(self, request: PlaybackEventRequest) -> AcceptedResponse:
         await self.broadcast(request.event_type, request.model_dump())
         if request.event_type in {"music.playback.near_end", "music.playback.ended"}:
-            await self.ensure_queue_seeded(reason=request.event_type)
+            self._request_maintenance("playback.queue_health", {
+                "event_type": request.event_type,
+                "queue_depth": self._queued_music_count(),
+            })
         return AcceptedResponse(accepted=True, kind="playback_event", text=None)
-
-
-def _seed_queries_from_profile_text(profile_text: str) -> list[str]:
-    lines = [line.strip(" -•\t") for line in profile_text.splitlines()]
-    cleaned = [line for line in lines if line]
-    deduped: list[str] = []
-    for item in cleaned:
-        if item not in deduped:
-            deduped.append(item)
-
-    expanded: list[str] = []
-    suffixes = [
-        "SoundCloud",
-        "indie",
-        "dream pop",
-        "late night",
-        "rainy day",
-        "heartbreak songs",
-    ]
-    for item in deduped:
-        expanded.append(item)
-        for suffix in suffixes:
-            expanded.append(f"{item} {suffix}")
-
-    final: list[str] = []
-    for item in expanded:
-        normalized = item.strip()
-        if normalized and normalized not in final:
-            final.append(normalized)
-        if len(final) >= 20:
-            break
-    return final
 
 
 def build_runtime_from_env() -> RuntimeService:
