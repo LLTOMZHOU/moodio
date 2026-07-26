@@ -72,6 +72,16 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
         runtime: RuntimeService = app.state.runtime
         return {"items": runtime.journal.recent(min(max(limit, 1), 500))}
 
+    @app.get("/api/conversation")
+    async def get_conversation(before: int | None = None, limit: int = 50) -> dict:
+        runtime: RuntimeService = app.state.runtime
+        return runtime.journal.conversation_page(before=before, limit=min(max(limit, 1), 100))
+
+    @app.delete("/api/conversation")
+    async def clear_conversation() -> dict:
+        runtime: RuntimeService = app.state.runtime
+        return await runtime.clear_conversation_history()
+
     @app.get("/api/debug/inspect")
     async def get_debug_inspect() -> dict:
         runtime: RuntimeService = app.state.runtime

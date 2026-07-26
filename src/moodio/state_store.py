@@ -96,6 +96,12 @@ class StateStore:
                 (segment_id, text, start_ms, duration_ms),
             )
 
+    def clear_conversation_records(self) -> None:
+        """Remove raw Listener/DJ text while preserving play signals and preferences."""
+        with self._connect() as conn:
+            conn.execute("delete from commands")
+            conn.execute("delete from transcript_segments")
+
     def save_listener_preferences(self, preferences: ListenerPreferences) -> None:
         with self._connect() as conn:
             conn.execute(

@@ -4,6 +4,9 @@ const state = {
   renderedPlaybackRef: null,
   chatMessages: [],
   streamingMessage: null,
+  conversationBefore: null,
+  conversationHasMore: true,
+  conversationLoading: false,
   isSpeaking: false,
   musicVolume: 1,
 };
@@ -159,7 +162,7 @@ function resetStreamMessage() {
   renderChat();
 }
 
-function renderChat() {
+function renderChat({ scrollToBottom = true } = {}) {
   const container = byId("chat-messages");
   container.innerHTML = "";
   for (const msg of state.chatMessages) {
@@ -177,7 +180,45 @@ function renderChat() {
     bubble.append(textEl, timeEl);
     container.appendChild(bubble);
   }
-  container.scrollTop = container.scrollHeight;
+  if (scrollToBottom) container.scrollTop = container.scrollHeight;
+}
+
+function conversationMessage(item) {
+  return {
+    id: item.id,
+    role: item.role === "listener" ? "user" : "moodio",
+    text: item.text,
+    time: new Date(item.at),
+  };
+}
+
+async function loadConversation({ older = false } = {}) {
+  if (state.conversationLoading || (older && !state.conversationHasMore)) return;
+  state.conversationLoading = true;
+  const container = byId("chat-messages");
+  const priorHeight = container.scrollHeight;
+  const priorTop = container.scrollTop;
+  try {
+    const params = new URLSearchParams({ limit: "50" });
+    if (older && state.conversationBefore !== null) params.set("before", String(state.conversationBefore));
+    const response = await fetch(`/api/conversation?${params}`);
+    if (!response.ok) throw new Error(await response.text());
+    const page = await response.json();
+    const messages = (page.items || []).map(conversationMessage);
+    state.conversationBefore = page.next_before;
+    state.conversationHasMore = Boolean(page.has_more);
+    if (older) {
+      state.chatMessages = [...messages, ...state.chatMessages];
+      renderChat({ scrollToBottom: false });
+      container.scrollTop = container.scrollHeight - priorHeight + priorTop;
+    } else {
+      state.chatMessages = messages;
+      state.streamingMessage = null;
+      renderChat();
+    }
+  } finally {
+    state.conversationLoading = false;
+  }
 }
 
 // --- TTS audio with fade ---
@@ -221,9 +262,7 @@ function connectEvents() {
   const handleMessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.event === "station.state.updated") renderState(message.payload);
-    if (message.event === "tts.segment.started") {
-      addChatMessage("moodio", message.payload.text);
-    }
+    if (message.event === "tts.segment.started") addChatMessage("moodio", message.payload.text);
     if (message.event === "tts.audio.ready") {
       playTtsAudio(message.payload);
     }
@@ -233,8 +272,15 @@ function connectEvents() {
     if (message.event === "queue.updated") refreshState();
     if (message.event === "agent.response.delta") appendStreamDelta(message.payload.delta);
     if (message.event === "agent.response.reset") resetStreamMessage();
+    if (message.event === "conversation.cleared") {
+      state.chatMessages = [];
+      state.streamingMessage = null;
+      state.conversationBefore = null;
+      state.conversationHasMore = false;
+      renderChat();
+    }
   };
-  ["station.state.updated", "tts.segment.started", "tts.audio.ready", "tts.audio.failed", "queue.updated", "agent.response.delta", "agent.response.reset"].forEach((name) => {
+  ["station.state.updated", "tts.segment.started", "tts.audio.ready", "tts.audio.failed", "queue.updated", "agent.response.delta", "agent.response.reset", "conversation.cleared"].forEach((name) => {
     events.addEventListener(name, handleMessage);
   });
   events.addEventListener("error", () => setMessage("reconnecting live updates…"));
@@ -243,19 +289,8 @@ function connectEvents() {
 // --- API helpers ---
 
 async function refreshState() {
-  const [nowResponse, transcriptResponse] = await Promise.all([
-    fetch("/api/now"),
-    fetch("/api/transcript/current"),
-  ]);
+  const nowResponse = await fetch("/api/now");
   renderState(await nowResponse.json());
-  const transcript = await transcriptResponse.json();
-  // Sync transcript into chat (only add segments not already in chat)
-  for (const seg of transcript.segments || []) {
-    const already = state.chatMessages.some(m => m.role === "moodio" && m.text === seg.text);
-    if (!already && seg.text) {
-      addChatMessage("moodio", seg.text);
-    }
-  }
 }
 
 async function postJson(url, payload) {
@@ -374,6 +409,20 @@ byId("command-form").addEventListener("submit", async (event) => {
   } catch (error) { setMessage(error.message); }
 });
 
+byId("clear-conversation").addEventListener("click", async () => {
+  const confirmed = window.confirm(
+    "Clear all conversation history? This keeps your listener profile, queue, play signals, and station tasks."
+  );
+  if (!confirmed) return;
+  try {
+    const response = await fetch("/api/conversation", { method: "DELETE" });
+    if (!response.ok) throw new Error(await response.text());
+    setMessage("Conversation history cleared. Your taste and station state were kept.");
+  } catch (error) {
+    setMessage(error.message || "Unable to clear conversation history");
+  }
+});
+
 byId("music-search-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = byId("music-search-input");
@@ -437,4 +486,9 @@ musicAudio.addEventListener("ended", async () => {
 });
 musicAudio.addEventListener("error", () => setMessage("Audio stream unavailable"));
 
-refreshState().then(connectEvents).catch((error) => setMessage(error.message));
+byId("chat-messages").addEventListener("scroll", () => {
+  const container = byId("chat-messages");
+  if (container.scrollTop < 48) loadConversation({ older: true }).catch((error) => setMessage(error.message));
+});
+
+Promise.all([refreshState(), loadConversation()]).then(connectEvents).catch((error) => setMessage(error.message));

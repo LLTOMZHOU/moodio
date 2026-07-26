@@ -226,6 +226,7 @@ class RuntimeService:
         self._queue_refill_task: asyncio.Task | None = None
         self._last_editorial_pulse_at: datetime | None = None
         self._seed_store()
+        self.journal.ensure_conversation_history()
         self.journal.save_snapshot(self.station_state.model_dump(mode="json"))
 
     async def start(self) -> None:
@@ -280,6 +281,7 @@ class RuntimeService:
             return
 
         await self._apply_agent_message(agent_message)
+        self.journal.append_conversation("moodio", agent_message)
         self._sync_persisted_play_context()
         await self.ensure_queue_seeded(reason="startup")
         await self.run_due_tasks()
@@ -534,7 +536,8 @@ class RuntimeService:
             "listener_profile": self._listener_profile_text(),
             "recent_context": asdict(self.state_store.recent_context(limit=20)),
             "tasks": [task.model_dump(mode="json") for task in self.task_store.list()],
-            "conversation_path": str(self.station_dir / "agent-session.jsonl"),
+            "conversation_path": str(self.journal.conversation_path),
+            "agent_session_path": str(self.station_dir / "agent-session.jsonl"),
             "profile_source": preferences.source if preferences else None,
         }
 
@@ -552,8 +555,21 @@ class RuntimeService:
                 entries.append(entry)
         return entries
 
+    async def clear_conversation_history(self) -> dict:
+        """Forget conversation text while retaining materialized Station state and preferences."""
+        async with self._agent_lane:
+            await self._session.clear_session()
+            self.journal.clear_conversation()
+            self.state_store.clear_conversation_records()
+            self.transcript_segments = []
+        await self.broadcast("conversation.cleared", {
+            "preserved": ["listener_profile", "queue", "play_signals", "station_tasks"],
+        })
+        return {"cleared": True, "preserved": ["listener_profile", "queue", "play_signals", "station_tasks"]}
+
     async def accept_command(self, request: CommandRequest) -> AcceptedResponse:
         self.state_store.record_command(request.text)
+        self.journal.append_conversation("listener", request.text)
         requirements = _turn_requirements(request.text)
         queue_revision_before_turn = self.station_state.queue_revision
         profile_before_turn = self._listener_profile_text()
@@ -614,6 +630,7 @@ class RuntimeService:
                 raise
 
         await self._apply_agent_message(agent_message)
+        self.journal.append_conversation("moodio", agent_message)
         self._sync_persisted_play_context()
 
         await self.broadcast("agent.turn.completed", {
@@ -932,7 +949,14 @@ def build_runtime_from_env() -> RuntimeService:
     openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
     openrouter_tts_model = os.environ.get("OPENROUTER_TTS_MODEL")
     audio_api_key = os.environ.get("OPENAI_AUDIO_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    # The production/local-server factory owns a durable Station directory.  Keep
+    # RuntimeService's temporary default for isolated callers, but never use it
+    # for `moodio serve`: that would silently discard the JSONL conversation on
+    # every restart.
+    data_dir = Path(os.environ.get("MOODIO_DATA_DIR", "var/data"))
     runtime_kwargs = {
+        "state_store": StateStore(data_dir / "moodio.db"),
+        "station_dir": data_dir / "station",
         "web_search_provider": DuckDuckGoSearchProvider(),
         "weather_provider": FetchWeatherProvider(),
         "music_provider": YouTubeProvider(),

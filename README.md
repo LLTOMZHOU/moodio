@@ -116,6 +116,7 @@ OPENROUTER_API_KEY=
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_MODEL=openai/gpt-5.4-mini
 MOODIO_AGENT_TIMEOUT_SECONDS=45
+MOODIO_DATA_DIR=var/data
 ```
 
 For OpenRouter TTS:
@@ -137,6 +138,8 @@ OPENAI_STT_MODEL=gpt-4o-mini-transcribe
 ```
 
 When `OPENROUTER_API_KEY` is set, the station agent uses the OpenAI Agents SDK with OpenRouter's OpenAI-compatible Chat Completions endpoint. The default runtime also exposes credential-free read tools for DuckDuckGo-backed web search and Open-Meteo weather snapshots.
+
+`moodio serve` persists the Station under `var/data` by default (or `MOODIO_DATA_DIR`): the Station snapshot, conversation JSONL, listener signals, and the SDK session all survive a server restart. `var/` is ignored by Git.
 
 ## Operator CLI
 

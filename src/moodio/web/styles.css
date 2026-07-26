@@ -603,6 +603,28 @@ button:active {
   max-height: 260px;
 }
 
+.conversation-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quiet-button {
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.quiet-button:hover {
+  border-color: var(--muted);
+  color: var(--ink);
+}
+
 .chat-bubble {
   max-width: 85%;
   padding: 10px 14px;
