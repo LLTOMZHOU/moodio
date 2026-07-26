@@ -32,6 +32,38 @@ uv run moodio latency --limit 10
 
 For every journey, record whether the DJ performed an unexpected music search, Queue mutation, profile revision, transport mutation, or visible Direct response.
 
+## Outcome contract
+
+Every journey must be evaluated against the same four evidence surfaces. This makes the scenarios concrete enough to turn into a fake-provider integration suite later, without making real-model prose brittle.
+
+| Surface | Record before and after | What counts as a meaningful assertion |
+| --- | --- | --- |
+| **Station state** | `now_playing.track_id`, `status`, `queue_revision`, and every Queue item's `program_item_id`, `kind`, `origin`, and order. | Exact preservation when a scenario says “unchanged”; otherwise an explicit delta such as “exactly two new `dj` Music items” or “one new `listener` Music item in priority order.” |
+| **Agent trace** | Ordered tool calls/results and final assistant message for the active run. | Required calls, allowed reads, forbidden mutation tools, candidate-before-mutation ordering, and at-most-once retry behavior. Never grade hidden reasoning or exact prose. |
+| **Durable records** | Conversation JSONL, Station feed, raw SDK session, Listener profile, and Station tasks. | Which records are appended, which remain unchanged, whether hidden direct-control events reach the next agent run, and whether a profile revision includes a concise reason. |
+| **External/transport effects** | Provider searches, playback status, voice mode, and audible/visible replies. | No provider request or transport change when prohibited; no autonomous resume; no visible reply for background work. |
+
+Use these terms consistently:
+
+- **Must:** deterministic contract; a violation is a failure.
+- **Must not:** forbidden side effect, including an unnecessary tool mutation.
+- **May:** legitimate model discretion; record it, but do not fail solely because it did or did not occur.
+- **Exact delta:** compare against the baseline, not against a hardcoded song title or sentence.
+
+### Journey contract matrix
+
+| Journey | Station-state contract | Agent/tool contract | Durable-state contract |
+| --- | --- | --- | --- |
+| 1. Conversation | Queue item sequence and revision are exact baseline; current track is unchanged. `status` may briefly become `speaking`. | Must not call search or any Queue/transport/profile mutation tool. `read_listener_profile` is allowed only for the taste-reflection step. | Exactly four Listener/assistant conversation pairs; profile, tasks, and play history unchanged. |
+| 2. Specific request | Step 1 adds exactly two `dj` Music items and preserves current playback. Step 3 changes current track only through explicit immediate-play intent. | Step 1 must observe Queue, search, inspect, then queue twice. Step 2 must not search/mutate. Step 3 must use `play_now` only after the explicit request. | Conversation records each turn; feed/trace explain every Queue/transport delta. Profile unchanged unless the Listener separately asks for memory. |
+| 3. Direct control | Direct queue adds one `listener` item in priority order; pause sets `idle`; play sets `playing`. | Steps 2–4 must not invoke an agent run. The later chat run may read state but must not mutate Queue/transport. | Direct controls create durable Station events and queued internal-event context; no chat item until step 5. |
+| 4. Explicit memory | Step 1 preserves Queue, current track, and transport. Step 3 adds exactly two `dj` items without immediate playback. | Step 1 must read then update profile once; step 3 must search/inspect/queue from current state and profile. | One concise `profile.updated` record with reason; no raw transcript copied into profile. |
+| 5. Autonomous health | If Queue is healthy, no Station mutation. If thin, only append DJ Music; never alter Listener-priority order or transport. | Maintenance may read state/profile and search/inspect/queue. It must not call `play_now`, `play`, or `pause`. | Playback trigger and resulting work are traceable; background final text is not appended as a visible conversation reply. |
+| 6. Import | Import alone does not mechanically choose Queue items. Any later additions are normal `dj` Music items. | Maintenance may read the imported profile and decide to search/queue; it must not use a legacy batch/refill helper. | Derived profile and compact import summary persist; source XML and raw Apple media references do not. |
+| 7. Implicit learning | Before the evidence threshold, Queue/profile remain unchanged by a single weak signal. After the threshold, Queue need not change. | The learning run must read profile and update it at most once; it must not search or play merely to justify learning. | Exactly one cautious profile update after aligned evidence; the one-signal negative control has none. |
+| 8. Co-programming | Listener item ID, origin, and priority position remain exact across all steps. Pause remains idle until direct play. | DJ may append/replace only `dj` items after inspecting Queue; must not replace/reorder the Listener item or call transport tools while paused. | Direct actions are retained as internal context; conversation captures only natural-language turns. |
+| 9. In-flight race | Direct item is committed once, retained, and remains ahead of autonomous DJ additions. | Direct queue bypasses agent lane. A stale DJ Queue result is rejected; at most one refreshed append-only attempt is allowed. | Feed/session preserve both causally ordered actions; one final assistant response for the original Listener message. |
+
 ## 1. Conversation stays conversation
 
 **Purpose:** ordinary social conversation is not an accidental programming request.
