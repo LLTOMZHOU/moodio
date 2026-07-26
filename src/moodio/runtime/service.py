@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -96,6 +97,27 @@ class _TurnRequirements:
     @property
     def has_requirements(self) -> bool:
         return self.requires_queue_mutation or self.requires_profile_update
+
+
+@dataclass
+class _TurnTiming:
+    """Monotonic timing for one Listener-requested Station turn."""
+
+    received_at: str
+    received_monotonic: float
+    first_model_started_at: str | None = None
+    first_model_started_monotonic: float | None = None
+    first_token_at: str | None = None
+    first_token_monotonic: float | None = None
+    first_agent_lane_wait_ms: int | None = None
+    model_rounds: int = 0
+    response_resets: int = 0
+
+
+def _elapsed_ms(start: float | None, end: float) -> int | None:
+    if start is None:
+        return None
+    return round((end - start) * 1_000)
 
 
 def _turn_requirements(text: str) -> _TurnRequirements:
@@ -514,17 +536,25 @@ class RuntimeService:
         return f"{self._trace_id}-{self._span_counter:04d}"
 
     async def broadcast(self, event: str, payload: dict) -> None:
-        if event.startswith(_FEED_EVENT_PREFIXES):
-            self.journal.append(event, payload)
-        if event in {"station.state.updated", "queue.updated"}:
-            self.journal.save_snapshot(self.station_state.model_dump(mode="json"))
+        timestamp = datetime.now(timezone.utc).isoformat()
+        span_id = self._next_span_id()
         envelope = {
             "event": event,
             "payload": payload,
             "trace_id": self._trace_id,
-            "span_id": self._next_span_id(),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "span_id": span_id,
+            "timestamp": timestamp,
         }
+        if event.startswith(_FEED_EVENT_PREFIXES):
+            self.journal.append(
+                event,
+                payload,
+                at=timestamp,
+                trace_id=self._trace_id,
+                span_id=span_id,
+            )
+        if event in {"station.state.updated", "queue.updated"}:
+            self.journal.save_snapshot(self.station_state.model_dump(mode="json"))
         for subscriber in list(self._subscribers):
             await subscriber.put(envelope)
 
@@ -554,6 +584,45 @@ class RuntimeService:
             if isinstance(entry, dict):
                 entries.append(entry)
         return entries
+
+    def latency_snapshot(self, limit: int = 20) -> list[dict]:
+        """Return completed Listener turns with durable server-side latency markers."""
+        completed_turns = [
+            entry
+            for entry in self.journal.recent(limit=500)
+            if entry.get("event") == "agent.turn.completed"
+            and isinstance(entry.get("payload"), dict)
+            and entry["payload"].get("mode") == "user_request"
+            and isinstance(entry["payload"].get("timing"), dict)
+            and "agent_lane_wait_ms" in entry["payload"]["timing"]
+        ]
+        return [
+            {
+                "trace_id": entry.get("trace_id"),
+                "span_id": entry.get("span_id"),
+                "completed_at": entry.get("at"),
+                "timing": entry["payload"].get("timing", {}),
+            }
+            for entry in completed_turns[-max(1, limit):]
+        ]
+
+    def _timing_payload(self, timing: _TurnTiming, completed_at: str) -> dict[str, object]:
+        completed_monotonic = time.perf_counter()
+        return {
+            "received_at": timing.received_at,
+            "model_started_at": timing.first_model_started_at,
+            "first_token_at": timing.first_token_at,
+            "completed_at": completed_at,
+            "agent_lane_wait_ms": timing.first_agent_lane_wait_ms,
+            "time_to_first_token_ms": _elapsed_ms(timing.received_monotonic, timing.first_token_monotonic),
+            "model_time_to_first_token_ms": _elapsed_ms(
+                timing.first_model_started_monotonic,
+                timing.first_token_monotonic,
+            ),
+            "total_ms": _elapsed_ms(timing.received_monotonic, completed_monotonic),
+            "model_rounds": timing.model_rounds,
+            "response_resets": timing.response_resets,
+        }
 
     async def clear_conversation_history(self) -> dict:
         """Forget conversation text while retaining materialized Station state and preferences."""
@@ -590,6 +659,10 @@ class RuntimeService:
         self._trace_id = uuid.uuid4().hex[:16]
         self._span_counter = 0
         turn_started_at = datetime.now(timezone.utc).isoformat()
+        turn_timing = _TurnTiming(
+            received_at=turn_started_at,
+            received_monotonic=time.perf_counter(),
+        )
         await self.broadcast("agent.turn.started", {
             "input": request.text,
             "mode": mode,
@@ -598,7 +671,7 @@ class RuntimeService:
         })
 
         try:
-            agent_message = await self._run_agent_streaming(request.text)
+            agent_message = await self._run_agent_streaming(request.text, timing=turn_timing)
         except Exception as exc:
             await self.broadcast("agent.turn.failed", {
                 "error": str(exc),
@@ -617,6 +690,7 @@ class RuntimeService:
             ),
         )
         if missing_requirements.has_requirements:
+            turn_timing.response_resets += 1
             await self.broadcast("agent.turn.correcting", {
                 "missing_queue_mutation": missing_requirements.requires_queue_mutation,
                 "missing_profile_update": missing_requirements.requires_profile_update,
@@ -625,7 +699,10 @@ class RuntimeService:
             # streamed copy before the corrective pass becomes the visible response.
             await self.broadcast("agent.response.reset", {})
             try:
-                agent_message = await self._run_agent_streaming(_correction_instruction(missing_requirements))
+                agent_message = await self._run_agent_streaming(
+                    _correction_instruction(missing_requirements),
+                    timing=turn_timing,
+                )
             except Exception as exc:
                 await self.broadcast("agent.turn.failed", {
                     "error": str(exc),
@@ -638,11 +715,13 @@ class RuntimeService:
         await self._apply_agent_message(agent_message)
         self._sync_persisted_play_context()
 
+        completed_at = datetime.now(timezone.utc).isoformat()
         await self.broadcast("agent.turn.completed", {
             "output": agent_message,
             "mode": mode,
             "started_at": turn_started_at,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": completed_at,
+            "timing": self._timing_payload(turn_timing, completed_at),
         })
 
         return AcceptedResponse(accepted=True, kind="natural_language", text=request.text)
@@ -704,8 +783,10 @@ class RuntimeService:
                 self._pending_internal_events.clear()
             return await self._station_turn_runner(input_payload, StationControl(self), session=self._session)
 
-    async def _run_agent_streaming(self, input_payload: str) -> str:
+    async def _run_agent_streaming(self, input_payload: str, *, timing: _TurnTiming | None = None) -> str:
+        lane_requested_monotonic = time.perf_counter()
         async with self._agent_lane:
+            lane_acquired_monotonic = time.perf_counter()
             if self._pending_internal_events:
                 await self._session.add_items([
                     {"role": "developer", "content": "[Internal Station event]\n" + json.dumps(event, sort_keys=True)}
@@ -713,8 +794,62 @@ class RuntimeService:
                 ])
                 self._pending_internal_events.clear()
 
+            if timing is not None:
+                timing.model_rounds += 1
+                model_started_at = datetime.now(timezone.utc).isoformat()
+                model_started_monotonic = time.perf_counter()
+                agent_lane_wait_ms = _elapsed_ms(lane_requested_monotonic, lane_acquired_monotonic)
+                if timing.first_model_started_monotonic is None:
+                    timing.first_model_started_at = model_started_at
+                    timing.first_model_started_monotonic = model_started_monotonic
+                    timing.first_agent_lane_wait_ms = agent_lane_wait_ms
+                await self.broadcast("agent.turn.model_started", {
+                    "round": timing.model_rounds,
+                    "model_started_at": model_started_at,
+                    "agent_lane_wait_ms": agent_lane_wait_ms,
+                    "station_context_prepare_ms": _elapsed_ms(
+                        lane_acquired_monotonic,
+                        model_started_monotonic,
+                    ),
+                    "elapsed_since_received_ms": _elapsed_ms(
+                        timing.received_monotonic,
+                        model_started_monotonic,
+                    ),
+                })
+
+            round_first_token_monotonic: float | None = None
+
             async def on_delta(delta: str) -> None:
+                nonlocal round_first_token_monotonic
                 if delta:
+                    if timing is not None and round_first_token_monotonic is None:
+                        round_first_token_monotonic = time.perf_counter()
+                        await self.broadcast("agent.turn.round_first_token", {
+                            "round": timing.model_rounds,
+                            "round_time_to_first_token_ms": _elapsed_ms(
+                                model_started_monotonic,
+                                round_first_token_monotonic,
+                            ),
+                            "elapsed_since_received_ms": _elapsed_ms(
+                                timing.received_monotonic,
+                                round_first_token_monotonic,
+                            ),
+                        })
+                    if timing is not None and timing.first_token_monotonic is None:
+                        timing.first_token_at = datetime.now(timezone.utc).isoformat()
+                        timing.first_token_monotonic = round_first_token_monotonic or time.perf_counter()
+                        await self.broadcast("agent.turn.first_token", {
+                            "first_token_at": timing.first_token_at,
+                            "time_to_first_token_ms": _elapsed_ms(
+                                timing.received_monotonic,
+                                timing.first_token_monotonic,
+                            ),
+                            "model_time_to_first_token_ms": _elapsed_ms(
+                                timing.first_model_started_monotonic,
+                                timing.first_token_monotonic,
+                            ),
+                            "round": timing.model_rounds,
+                        })
                     await self.broadcast("agent.response.delta", {"delta": delta})
 
             if self._station_turn_runner is run_station_turn:

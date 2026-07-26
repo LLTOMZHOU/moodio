@@ -155,6 +155,9 @@ uv run moodio transcript
 uv run moodio feed --limit 50
 uv run moodio trace --limit 100
 uv run moodio session --limit 100
+# Review durable server-side agent-lane wait, first-token, and total turn latency.
+uv run moodio latency --limit 20
+# Observe raw live timestamps and individual token deltas during one turn.
 uv run moodio tail --filter agent --json
 
 # Act on that same station.
@@ -162,7 +165,7 @@ uv run moodio command "play something warmer"
 uv run moodio transcribe ./command.wav
 ```
 
-`trace` shows finalized persisted Agents SDK conversation items: Listener messages, assistant messages, tool calls, and tool outputs. It intentionally excludes streaming text deltas; those are transient UI transport events. `session` is an alias for `trace`, and `tail` remains available when live runtime events are useful.
+`trace` shows finalized persisted Agents SDK conversation items: Listener messages, assistant messages, tool calls, and tool outputs. It intentionally excludes streaming text deltas and does not contain timing metadata. `latency` reads durable Station timing spans for completed Listener turns. `session` is an alias for `trace`; `tail --json` remains the live, full-fidelity event view.
 
 ## Docs
 

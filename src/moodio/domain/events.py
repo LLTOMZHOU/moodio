@@ -22,6 +22,9 @@ RuntimeEventName = Literal[
     "favorites.updated",
     # Agent turn lifecycle
     "agent.turn.started",
+    "agent.turn.model_started",
+    "agent.turn.first_token",
+    "agent.turn.round_first_token",
     "agent.turn.completed",
     "agent.turn.failed",
     # Durable conversation lifecycle

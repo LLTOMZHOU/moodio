@@ -70,6 +70,8 @@ async def _run_async(
         _print_json(await _server_request(args, "GET", "/api/debug/trace", params={"limit": args.limit}), stdout)
     elif args.command_name == "session":
         _print_json(await _server_request(args, "GET", "/api/debug/session", params={"limit": args.limit}), stdout)
+    elif args.command_name == "latency":
+        _print_json(await _server_request(args, "GET", "/api/debug/latency", params={"limit": args.limit}), stdout)
     elif args.command_name == "command":
         _print_json(await _server_request(args, "POST", "/api/command", json={"text": args.text}, timeout=120), stdout)
     elif args.command_name == "transcribe":
@@ -250,10 +252,35 @@ def _summarize_payload(event_name: str, payload: dict) -> str:
             input_text = input_text[:57] + "..."
         return f"mode={mode} input=\"{input_text}\""
 
+    if event_name == "agent.turn.model_started":
+        return (
+            f"round={payload.get('round', '?')} "
+            f"lane_wait={payload.get('agent_lane_wait_ms', '?')}ms"
+        )
+
+    if event_name == "agent.turn.first_token":
+        return (
+            f"round={payload.get('round', '?')} "
+            f"ttft={payload.get('time_to_first_token_ms', '?')}ms"
+        )
+
+    if event_name == "agent.turn.round_first_token":
+        return (
+            f"round={payload.get('round', '?')} "
+            f"round_ttft={payload.get('round_time_to_first_token_ms', '?')}ms"
+        )
+
     if event_name == "agent.turn.completed":
         output = payload.get("output", "")
         if len(output) > 60:
             output = output[:57] + "..."
+        timing = payload.get("timing", {})
+        if isinstance(timing, dict) and timing.get("total_ms") is not None:
+            return (
+                f"total={timing.get('total_ms')}ms "
+                f"ttft={timing.get('time_to_first_token_ms')}ms "
+                f"resets={timing.get('response_resets', 0)} output=\"{output}\""
+            )
         return f"output=\"{output}\""
 
     if event_name == "agent.turn.failed":
@@ -359,6 +386,9 @@ def _parser() -> argparse.ArgumentParser:
     session = subcommands.add_parser("session", help="Alias for trace")
     _add_server_options(session)
     session.add_argument("--limit", default=100, type=int)
+    latency = subcommands.add_parser("latency", help="Read durable server-side timing for recent Listener turns")
+    _add_server_options(latency)
+    latency.add_argument("--limit", default=20, type=int)
     next_command = subcommands.add_parser("next", help="Advance to next queued track on the running server")
     _add_server_options(next_command)
     previous = subcommands.add_parser("previous", help="Return to previous track on the running server")

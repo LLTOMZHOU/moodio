@@ -36,13 +36,26 @@ class StationJournal:
             return None
         return payload if isinstance(payload, dict) else None
 
-    def append(self, event: str, payload: dict[str, Any]) -> None:
+    def append(
+        self,
+        event: str,
+        payload: dict[str, Any],
+        *,
+        at: str | None = None,
+        trace_id: str | None = None,
+        span_id: str | None = None,
+    ) -> None:
+        entry: dict[str, Any] = {
+            "at": at or datetime.now(timezone.utc).isoformat(),
+            "event": event,
+            "payload": payload,
+        }
+        if trace_id:
+            entry["trace_id"] = trace_id
+        if span_id:
+            entry["span_id"] = span_id
         with self.feed_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({
-                "at": datetime.now(timezone.utc).isoformat(),
-                "event": event,
-                "payload": payload,
-            }, sort_keys=True, default=str))
+            handle.write(json.dumps(entry, sort_keys=True, default=str))
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
