@@ -4,6 +4,9 @@ const state = {
   renderedPlaybackRef: null,
   chatMessages: [],
   streamingMessage: null,
+  streamingTextNode: null,
+  streamingFrame: null,
+  pendingStreamText: "",
   conversationBefore: null,
   conversationHasMore: true,
   conversationLoading: false,
@@ -135,50 +138,76 @@ function renderQueueItem(track, index) {
 // --- Chat conversation view ---
 
 function addChatMessage(role, text) {
-  if (role === "moodio" && state.streamingMessage) {
-    state.streamingMessage.text = text;
-    state.streamingMessage = null;
-    renderChat();
-    return;
-  }
   state.chatMessages.push({ role, text, time: new Date() });
   renderChat();
 }
 
+function isNearChatBottom(container) {
+  return container.scrollHeight - container.scrollTop - container.clientHeight < 48;
+}
+
+function createChatBubble(msg, { streaming = false } = {}) {
+  const bubble = document.createElement("div");
+  bubble.className = `chat-bubble chat-${msg.role}${streaming ? " is-streaming" : ""}`;
+
+  const textEl = document.createElement("div");
+  textEl.className = "chat-text";
+  textEl.append(document.createTextNode(msg.text));
+
+  const timeEl = document.createElement("div");
+  timeEl.className = "chat-time";
+  timeEl.textContent = streaming ? "live" : msg.time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  bubble.append(textEl, timeEl);
+  return { bubble, textEl };
+}
+
+function clearStreamingMessage({ render = false } = {}) {
+  if (state.streamingFrame !== null) cancelAnimationFrame(state.streamingFrame);
+  state.streamingFrame = null;
+  state.pendingStreamText = "";
+  state.streamingMessage = null;
+  state.streamingTextNode = null;
+  if (render) renderChat();
+}
+
+function flushStreamText() {
+  state.streamingFrame = null;
+  if (!state.streamingMessage || !state.streamingTextNode || !state.pendingStreamText) return;
+  state.streamingTextNode.appendData(state.pendingStreamText);
+  state.pendingStreamText = "";
+}
+
 function appendStreamDelta(delta) {
+  if (!delta) return;
+  const container = byId("chat-messages");
+  const followStream = isNearChatBottom(container);
   if (!state.streamingMessage) {
     state.streamingMessage = { role: "moodio", text: "", time: new Date() };
-    state.chatMessages.push(state.streamingMessage);
+    const { bubble, textEl } = createChatBubble(state.streamingMessage, { streaming: true });
+    container.appendChild(bubble);
+    state.streamingTextNode = textEl.firstChild;
   }
   state.streamingMessage.text += delta;
-  renderChat();
+  state.pendingStreamText += delta;
+  if (state.streamingFrame === null) state.streamingFrame = requestAnimationFrame(flushStreamText);
+  if (followStream) container.scrollTop = container.scrollHeight;
 }
 
 function resetStreamMessage() {
-  if (!state.streamingMessage) return;
-  const index = state.chatMessages.indexOf(state.streamingMessage);
-  if (index >= 0) state.chatMessages.splice(index, 1);
-  state.streamingMessage = null;
-  renderChat();
+  clearStreamingMessage({ render: true });
 }
 
 function renderChat({ scrollToBottom = true } = {}) {
   const container = byId("chat-messages");
   container.innerHTML = "";
   for (const msg of state.chatMessages) {
-    const bubble = document.createElement("div");
-    bubble.className = `chat-bubble chat-${msg.role}`;
-
-    const textEl = document.createElement("div");
-    textEl.className = "chat-text";
-    textEl.textContent = msg.text;
-
-    const timeEl = document.createElement("div");
-    timeEl.className = "chat-time";
-    timeEl.textContent = msg.time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-
-    bubble.append(textEl, timeEl);
+    container.appendChild(createChatBubble(msg).bubble);
+  }
+  if (state.streamingMessage) {
+    const { bubble, textEl } = createChatBubble(state.streamingMessage, { streaming: true });
     container.appendChild(bubble);
+    state.streamingTextNode = textEl.firstChild;
   }
   if (scrollToBottom) container.scrollTop = container.scrollHeight;
 }
@@ -190,6 +219,20 @@ function conversationMessage(item) {
     text: item.text,
     time: new Date(item.at),
   };
+}
+
+function conversationMessageSaved(item) {
+  const message = conversationMessage(item);
+  if (message.role === "moodio" && state.streamingMessage) {
+    clearStreamingMessage();
+    state.chatMessages.push(message);
+    renderChat();
+    return;
+  }
+  if (!state.chatMessages.some((existing) => existing.id === message.id)) {
+    state.chatMessages.push(message);
+    renderChat();
+  }
 }
 
 async function loadConversation({ older = false } = {}) {
@@ -213,7 +256,7 @@ async function loadConversation({ older = false } = {}) {
       container.scrollTop = container.scrollHeight - priorHeight + priorTop;
     } else {
       state.chatMessages = messages;
-      state.streamingMessage = null;
+      clearStreamingMessage();
       renderChat();
     }
   } finally {
@@ -262,7 +305,6 @@ function connectEvents() {
   const handleMessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.event === "station.state.updated") renderState(message.payload);
-    if (message.event === "tts.segment.started") addChatMessage("moodio", message.payload.text);
     if (message.event === "tts.audio.ready") {
       playTtsAudio(message.payload);
     }
@@ -272,15 +314,17 @@ function connectEvents() {
     if (message.event === "queue.updated") refreshState();
     if (message.event === "agent.response.delta") appendStreamDelta(message.payload.delta);
     if (message.event === "agent.response.reset") resetStreamMessage();
+    if (message.event === "agent.turn.failed") resetStreamMessage();
+    if (message.event === "conversation.message.saved") conversationMessageSaved(message.payload.item);
     if (message.event === "conversation.cleared") {
       state.chatMessages = [];
-      state.streamingMessage = null;
+      clearStreamingMessage();
       state.conversationBefore = null;
       state.conversationHasMore = false;
       renderChat();
     }
   };
-  ["station.state.updated", "tts.segment.started", "tts.audio.ready", "tts.audio.failed", "queue.updated", "agent.response.delta", "agent.response.reset", "conversation.cleared"].forEach((name) => {
+  ["station.state.updated", "tts.audio.ready", "tts.audio.failed", "queue.updated", "agent.response.delta", "agent.response.reset", "agent.turn.failed", "conversation.message.saved", "conversation.cleared"].forEach((name) => {
     events.addEventListener(name, handleMessage);
   });
   events.addEventListener("error", () => setMessage("reconnecting live updates…"));

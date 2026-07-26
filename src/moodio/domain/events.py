@@ -24,6 +24,9 @@ RuntimeEventName = Literal[
     "agent.turn.started",
     "agent.turn.completed",
     "agent.turn.failed",
+    # Durable conversation lifecycle
+    "conversation.message.saved",
+    "conversation.cleared",
     # Agent tool calls
     "agent.tool.call",
     "agent.tool.result",

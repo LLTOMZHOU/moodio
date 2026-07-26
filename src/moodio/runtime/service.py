@@ -280,8 +280,8 @@ class RuntimeService:
             })
             return
 
+        await self._commit_moodio_message(agent_message)
         await self._apply_agent_message(agent_message)
-        self.journal.append_conversation("moodio", agent_message)
         self._sync_persisted_play_context()
         await self.ensure_queue_seeded(reason="startup")
         await self.run_due_tasks()
@@ -567,6 +567,11 @@ class RuntimeService:
         })
         return {"cleared": True, "preserved": ["listener_profile", "queue", "play_signals", "station_tasks"]}
 
+    async def _commit_moodio_message(self, text: str) -> None:
+        """Durably save a visible reply before announcing it to connected consoles."""
+        item = self.journal.append_conversation("moodio", text)
+        await self.broadcast("conversation.message.saved", {"item": item})
+
     async def accept_command(self, request: CommandRequest) -> AcceptedResponse:
         self.state_store.record_command(request.text)
         self.journal.append_conversation("listener", request.text)
@@ -629,8 +634,8 @@ class RuntimeService:
                 })
                 raise
 
+        await self._commit_moodio_message(agent_message)
         await self._apply_agent_message(agent_message)
-        self.journal.append_conversation("moodio", agent_message)
         self._sync_persisted_play_context()
 
         await self.broadcast("agent.turn.completed", {

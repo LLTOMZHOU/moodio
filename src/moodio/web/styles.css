@@ -652,6 +652,34 @@ button:active {
   white-space: pre-wrap;
 }
 
+.chat-bubble.is-streaming .chat-text::after {
+  content: "";
+  display: inline-block;
+  width: 0.42em;
+  height: 1.05em;
+  margin-left: 0.12em;
+  vertical-align: -0.18em;
+  background: currentColor;
+  animation: stream-cursor 850ms steps(2, start) infinite;
+}
+
+.chat-bubble.is-streaming .chat-time {
+  color: #7c5200;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+@keyframes stream-cursor {
+  50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-bubble.is-streaming .chat-text::after {
+    animation: none;
+  }
+}
+
 .chat-time {
   margin-top: 4px;
   font-size: 10px;
