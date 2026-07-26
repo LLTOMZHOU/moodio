@@ -20,6 +20,12 @@ class FavoriteRequest(BaseModel):
     track_id: str = Field(min_length=1)
 
 
+class VoiceModeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
 class QueueSoundCloudEmbedRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

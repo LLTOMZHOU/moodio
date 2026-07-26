@@ -16,6 +16,7 @@ from moodio.api.schemas import (
     CandidateActionRequest,
     CommentaryRequest,
     FavoriteRequest,
+    VoiceModeRequest,
     PlaybackEventRequest,
     MusicSearchRequest,
     PreferenceImportRequest,
@@ -99,6 +100,11 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
     async def post_favorite(request: FavoriteRequest) -> dict:
         runtime: RuntimeService = app.state.runtime
         return (await runtime.favorite_track(request)).model_dump()
+
+    @app.post("/api/voice-mode")
+    async def post_voice_mode(request: VoiceModeRequest) -> dict:
+        runtime: RuntimeService = app.state.runtime
+        return await runtime.set_voice_mode(request.enabled)
 
     @app.post("/api/queue/soundcloud-embed")
     async def post_soundcloud_embed(request: QueueSoundCloudEmbedRequest) -> dict:

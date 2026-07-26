@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 from datetime import datetime, timezone
@@ -162,6 +163,7 @@ class RuntimeService:
                     _seed_next_track(), origin="scheduler", reason="Initial station seed"
                 ).model_dump()],
                 "favorites_enabled": True,
+                "voice_mode": False,
             }
         )
         persisted_snapshot = self.journal.load_snapshot()
@@ -175,6 +177,8 @@ class RuntimeService:
         self._previous_tracks: list[QueueItem] = []
         self._listener_priority_count = 0
         self._session: Session = JsonlSession(self.station_dir / "agent-session.jsonl")
+        self._agent_lane = asyncio.Lock()
+        self._pending_internal_events: list[dict[str, object]] = []
         self._subscribers: list[asyncio.Queue[dict]] = []
         self._trace_id: str = ""
         self._span_counter: int = 0
@@ -222,12 +226,10 @@ class RuntimeService:
             "started_at": started_at,
         })
         try:
-            agent_message = await self._station_turn_runner(
+            agent_message = await self._run_agent(
                 "You just came on air. Check the weather and station state, then introduce yourself "
                 "to the listener with a warm opening line. If the weather suggests a mood, "
-                "queue something that fits. If the queue is thin, go find a good opening track.",
-                StationControl(self),
-                session=self._session,
+                "queue something that fits. If the queue is thin, go find a good opening track."
             )
         except Exception as exc:
             await self.broadcast("agent.turn.failed", {
@@ -283,11 +285,7 @@ class RuntimeService:
                 continue
             await self.broadcast("task.started", {"task_id": task.task_id, "instruction": task.instruction})
             try:
-                await self._station_turn_runner(
-                    f"[scheduled station task] {task.instruction}",
-                    StationControl(self),
-                    session=self._session,
-                )
+                await self._run_agent(f"[scheduled station task] {task.instruction}")
             except Exception as exc:
                 await self.broadcast("task.failed", {"task_id": task.task_id, "error": str(exc)})
                 updated.append(task)
@@ -467,11 +465,7 @@ class RuntimeService:
         })
 
         try:
-            agent_message = await self._station_turn_runner(
-                request.text,
-                StationControl(self),
-                session=self._session,
-            )
+            agent_message = await self._run_agent(request.text)
         except Exception as exc:
             await self.broadcast("agent.turn.failed", {
                 "error": str(exc),
@@ -515,7 +509,7 @@ class RuntimeService:
         self.station_state = self.station_state.model_copy(update={"status": "speaking"})
 
         await self.broadcast("tts.segment.started", segment.model_dump())
-        if self.speech_synthesizer is not None:
+        if self.station_state.voice_mode and self.speech_synthesizer is not None:
             try:
                 audio = self.speech_synthesizer.synthesize(segment.text, voice=segment.voice)
             except Exception as exc:
@@ -524,6 +518,25 @@ class RuntimeService:
                 await self.broadcast("tts.audio.ready", audio.model_dump(mode="json"))
         await self.broadcast("tts.segment.completed", segment.model_dump())
         await self.broadcast("station.state.updated", self.station_state.model_dump())
+
+    async def _run_agent(self, input_payload: str) -> str:
+        """Serialize the shared DJ session and flush typed direct-control context."""
+        async with self._agent_lane:
+            if self._pending_internal_events:
+                items = [
+                    {
+                        "role": "developer",
+                        "content": "[Internal Station event — application context, not a Listener request]\n"
+                        + json.dumps(event, sort_keys=True),
+                    }
+                    for event in self._pending_internal_events
+                ]
+                await self._session.add_items(items)
+                self._pending_internal_events.clear()
+            return await self._station_turn_runner(input_payload, StationControl(self), session=self._session)
+
+    def _queue_internal_event(self, kind: str, payload: dict[str, object]) -> None:
+        self._pending_internal_events.append({"kind": kind, "origin": "listener", "payload": payload})
 
     def transcribe_audio(self, audio: bytes, *, filename: str, content_type: str) -> dict:
         if self.speech_transcriber is None:
@@ -593,6 +606,7 @@ class RuntimeService:
         self._bump_queue_revision()
         await self.broadcast("queue.updated", self._queue_payload())
         await self.broadcast("station.state.updated", self.station_state.model_dump())
+        self._queue_internal_event("playback.skipped", {"track_id": self.station_state.now_playing.track_id})
         if self._queued_music_count() < _DEFAULT_QUEUE_LOW_WATERMARK:
             await self.ensure_queue_seeded(reason="queue_low")
 
@@ -624,6 +638,8 @@ class RuntimeService:
         queue_payload = self._queue_payload()
         await self.broadcast("queue.updated", queue_payload)
         await self.broadcast("station.state.updated", self.station_state.model_dump())
+        if origin == "listener":
+            self._queue_internal_event("queue.listener_added", {"track_id": track.track_id, "reason": reason})
 
         return {
             "accepted": True,
@@ -672,6 +688,7 @@ class RuntimeService:
         self._bump_queue_revision()
         await self.broadcast("queue.updated", self._queue_payload())
         await self.broadcast("station.state.updated", self.station_state.model_dump())
+        self._queue_internal_event("playback.previous", {"track_id": self.station_state.now_playing.track_id})
 
         return {
             "accepted": True,
@@ -680,16 +697,28 @@ class RuntimeService:
         }
 
     async def play(self) -> TransportActionResponse:
+        self.station_state = self.station_state.model_copy(update={"status": "playing"})
+        await self.broadcast("station.state.updated", self.station_state.model_dump())
+        self._queue_internal_event("playback.resumed", {})
         return TransportActionResponse(accepted=True, action="play")
 
     async def pause(self) -> TransportActionResponse:
+        self.station_state = self.station_state.model_copy(update={"status": "idle"})
+        await self.broadcast("station.state.updated", self.station_state.model_dump())
+        self._queue_internal_event("playback.paused", {})
         return TransportActionResponse(accepted=True, action="pause")
 
     async def favorite_track(self, request: FavoriteRequest) -> FavoriteResponse:
         self.favorites.add(request.track_id)
         payload = {"track_id": request.track_id, "favorited": True}
         await self.broadcast("favorites.updated", payload)
+        self._queue_internal_event("listener.favorite", payload)
         return FavoriteResponse(accepted=True, track_id=request.track_id, favorited=True)
+
+    async def set_voice_mode(self, enabled: bool) -> dict:
+        self.station_state = self.station_state.model_copy(update={"voice_mode": enabled})
+        await self.broadcast("station.state.updated", self.station_state.model_dump())
+        return {"enabled": enabled}
 
     async def ingest_playback_event(self, request: PlaybackEventRequest) -> AcceptedResponse:
         await self.broadcast(request.event_type, request.model_dump())

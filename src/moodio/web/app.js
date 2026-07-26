@@ -68,6 +68,7 @@ function renderState(payload) {
 
   byId("status-line").textContent = `${payload.mode} / ${payload.talk_density}`;
   byId("station-status").textContent = payload.status;
+  byId("voice-mode").checked = Boolean(payload.voice_mode);
   byId("track-title").textContent = payload.now_playing.title;
   byId("track-artist").textContent = `${payload.now_playing.artist} · ${payload.now_playing.album}`;
 
@@ -286,6 +287,11 @@ byId("favorite-button").addEventListener("click", async () => {
     await postJson("/api/favorite", { track_id: state.currentTrackId });
     setMessage("favorited ♥");
   } catch (error) { setMessage(error.message); }
+});
+
+byId("voice-mode").addEventListener("change", async (event) => {
+  try { await postJson("/api/voice-mode", { enabled: event.target.checked }); }
+  catch (error) { setMessage(error.message); }
 });
 
 byId("command-form").addEventListener("submit", async (event) => {

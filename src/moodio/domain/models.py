@@ -120,3 +120,4 @@ class StationState(BaseModel):
     queue: list[ProgramItem]
     queue_revision: int = Field(default=0, ge=0)
     favorites_enabled: bool
+    voice_mode: bool = False
