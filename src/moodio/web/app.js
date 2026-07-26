@@ -3,6 +3,7 @@ const state = {
   currentTrackId: null,
   renderedPlaybackRef: null,
   chatMessages: [],
+  streamingMessage: null,
   isSpeaking: false,
   musicVolume: 1,
 };
@@ -110,7 +111,22 @@ function renderQueueItem(track, index) {
 // --- Chat conversation view ---
 
 function addChatMessage(role, text) {
+  if (role === "moodio" && state.streamingMessage) {
+    state.streamingMessage.text = text;
+    state.streamingMessage = null;
+    renderChat();
+    return;
+  }
   state.chatMessages.push({ role, text, time: new Date() });
+  renderChat();
+}
+
+function appendStreamDelta(delta) {
+  if (!state.streamingMessage) {
+    state.streamingMessage = { role: "moodio", text: "", time: new Date() };
+    state.chatMessages.push(state.streamingMessage);
+  }
+  state.streamingMessage.text += delta;
   renderChat();
 }
 
@@ -186,8 +202,9 @@ function connectEvents() {
       showTtsFailure(message.payload);
     }
     if (message.event === "queue.updated") refreshState();
+    if (message.event === "agent.response.delta") appendStreamDelta(message.payload.delta);
   };
-  ["station.state.updated", "tts.segment.started", "tts.audio.ready", "tts.audio.failed", "queue.updated"].forEach((name) => {
+  ["station.state.updated", "tts.segment.started", "tts.audio.ready", "tts.audio.failed", "queue.updated", "agent.response.delta"].forEach((name) => {
     events.addEventListener(name, handleMessage);
   });
   events.addEventListener("error", () => setMessage("reconnecting live updates…"));

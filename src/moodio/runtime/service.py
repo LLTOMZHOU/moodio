@@ -42,7 +42,7 @@ from moodio.runtime.journal import StationJournal
 from moodio.runtime.session import JsonlSession
 from moodio.runtime.tasks import StationTaskStore
 from moodio.state_store import ListenerPreferences, StateStore
-from moodio.station_agent import run_station_turn
+from moodio.station_agent import run_station_turn, run_station_turn_streaming
 from moodio.voice import (
     ElevenLabsSpeechSynthesizer,
     OpenAISpeechSynthesizer,
@@ -493,7 +493,7 @@ class RuntimeService:
         })
 
         try:
-            agent_message = await self._run_agent(request.text)
+            agent_message = await self._run_agent_streaming(request.text)
         except Exception as exc:
             await self.broadcast("agent.turn.failed", {
                 "error": str(exc),
@@ -561,6 +561,23 @@ class RuntimeService:
                 ]
                 await self._session.add_items(items)
                 self._pending_internal_events.clear()
+            return await self._station_turn_runner(input_payload, StationControl(self), session=self._session)
+
+    async def _run_agent_streaming(self, input_payload: str) -> str:
+        async with self._agent_lane:
+            if self._pending_internal_events:
+                await self._session.add_items([
+                    {"role": "developer", "content": "[Internal Station event]\n" + json.dumps(event, sort_keys=True)}
+                    for event in self._pending_internal_events
+                ])
+                self._pending_internal_events.clear()
+
+            async def on_delta(delta: str) -> None:
+                if delta:
+                    await self.broadcast("agent.response.delta", {"delta": delta})
+
+            if self._station_turn_runner is run_station_turn:
+                return await run_station_turn_streaming(input_payload, StationControl(self), self._session, on_delta)
             return await self._station_turn_runner(input_payload, StationControl(self), session=self._session)
 
     def _queue_internal_event(self, kind: str, payload: dict[str, object]) -> None:

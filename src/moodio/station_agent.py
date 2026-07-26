@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from agents import Agent, RunConfig, Runner, function_tool
@@ -378,3 +379,34 @@ async def run_station_turn(
     except TimeoutError as exc:
         raise TimeoutError(f"station agent turn timed out after {timeout_seconds:g}s") from exc
     return parse_agent_result(result.final_output)
+
+
+async def run_station_turn_streaming(
+    input_payload: dict | str,
+    control: StationControl,
+    session: Session,
+    on_delta: Callable[[str], Awaitable[None]],
+) -> str:
+    """Run one Listener turn and publish only model text deltas, never tool telemetry."""
+    model_input = json.dumps(input_payload, sort_keys=True) if isinstance(input_payload, dict) else input_payload
+    streamed = Runner.run_streamed(
+        build_station_agent(control),
+        input=model_input,
+        run_config=build_model_config(),
+        session=session,
+    )
+
+    async def consume() -> str:
+        async for event in streamed.stream_events():
+            if event.type != "raw_response_event":
+                continue
+            data = event.data
+            if getattr(data, "type", None) == "response.output_text.delta":
+                await on_delta(str(getattr(data, "delta", "")))
+        return parse_agent_result(streamed.final_output)
+
+    timeout_seconds = float(os.environ.get("MOODIO_AGENT_TIMEOUT_SECONDS", _DEFAULT_AGENT_TIMEOUT_SECONDS))
+    try:
+        return await asyncio.wait_for(consume(), timeout=timeout_seconds)
+    except TimeoutError as exc:
+        raise TimeoutError(f"station agent turn timed out after {timeout_seconds:g}s") from exc
