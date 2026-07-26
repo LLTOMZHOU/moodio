@@ -38,6 +38,7 @@ class ProviderTrack(BaseModel):
                 "duration_seconds": self.duration_seconds,
                 "playback_ref": self.playback_ref,
                 "artwork_url": self.artwork_url or "https://example.test/artwork/provider-track.jpg",
+                "external_url": self.external_url,
             }
         )
 

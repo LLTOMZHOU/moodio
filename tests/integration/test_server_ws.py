@@ -33,7 +33,7 @@ def test_websocket_receives_queue_update_after_next_action() -> None:
 
     assert queue_event["event"] == "queue.updated"
     assert state_event["event"] == "station.state.updated"
-    assert state_event["payload"]["now_playing"]["track_id"] == "apple:track:rainy-focus-02"
+    assert state_event["payload"]["now_playing"]["track_id"] == "apple:track:soft-sunset-02"
 
 
 def test_websocket_receives_favorite_event_after_direct_favorite() -> None:
@@ -54,7 +54,7 @@ def test_websocket_receives_favorite_event_after_direct_favorite() -> None:
 
 
 def test_websocket_receives_runtime_events_after_command() -> None:
-    async def fake_run_station_turn(_: dict, control: StationControl) -> str:
+    async def fake_run_station_turn(_: dict | str, control: StationControl, session) -> str:
         await control.queue_track(
             QueueItem.model_validate(
                 {
@@ -80,12 +80,16 @@ def test_websocket_receives_runtime_events_after_command() -> None:
         response = client.post("/api/command", json={"text": "play something warmer"})
         assert response.status_code == 202
 
+        turn_started_event = websocket.receive_json()
         queue_event = websocket.receive_json()
         queue_state_event = websocket.receive_json()
         started_event = websocket.receive_json()
         completed_event = websocket.receive_json()
         state_event = websocket.receive_json()
+        turn_completed_event = websocket.receive_json()
 
+    assert turn_started_event["event"] == "agent.turn.started"
+    assert turn_started_event["payload"]["input"] == "play something warmer"
     assert queue_event["event"] == "queue.updated"
     assert queue_event["payload"]["queue"][0]["track_id"] == "apple:track:cozy-synth-01"
     assert queue_state_event["event"] == "station.state.updated"
@@ -94,6 +98,7 @@ def test_websocket_receives_runtime_events_after_command() -> None:
     assert state_event["event"] == "station.state.updated"
     assert state_event["payload"]["mode"] == "user_request"
     assert state_event["payload"]["status"] == "speaking"
+    assert turn_completed_event["event"] == "agent.turn.completed"
 
 
 def test_websocket_receives_playback_near_end_event_after_frontend_signal() -> None:

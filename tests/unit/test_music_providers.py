@@ -4,7 +4,7 @@ import pytest
 
 from moodio.domain.models import QueueItem
 from moodio.music.providers import ProviderTrack
-from moodio.music.soundcloud import SoundCloudProvider
+from moodio.music.soundcloud import SoundCloudProvider, is_individual_track_url
 
 
 def test_provider_track_converts_to_stable_queue_item() -> None:
@@ -33,6 +33,7 @@ def test_provider_track_converts_to_stable_queue_item() -> None:
     assert queue_item.artist == "Of Monsters and Men"
     assert queue_item.album == "SoundCloud"
     assert queue_item.playback_ref == "soundcloud:track:123"
+    assert queue_item.external_url == "https://soundcloud.com/ofmonstersandmen/the-actor"
 
 
 def test_soundcloud_provider_resolves_embed_url_without_api_credentials() -> None:
@@ -64,13 +65,52 @@ def test_soundcloud_provider_resolves_embed_url_without_api_credentials() -> Non
     assert track.title == "The Actor"
     assert track.artist == "Of Monsters and Men"
     assert track.duration_seconds == 1
-    assert track.playback_ref == "soundcloud:embed:https://soundcloud.com/ofmonstersandmen/the-actor"
+    assert track.playback_ref == "soundcloud:embed:https://api.soundcloud.com/tracks/123"
     assert track.embed_html == '<iframe src="https://w.soundcloud.com/player/?url=https%3A//api.soundcloud.com/tracks/123"></iframe>'
     assert track.attribution == {
         "source": "SoundCloud",
         "creator": "Of Monsters and Men",
         "external_url": "https://soundcloud.com/ofmonstersandmen/the-actor",
     }
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://soundcloud.com/ofmonstersandmen/the-actor", True),
+        ("https://soundcloud.com/ofmonstersandmen", False),
+        ("https://soundcloud.com/ofmonstersandmen/sets/my-playlist", False),
+        ("https://soundcloud.com/ofmonstersandmen/albums", False),
+        ("https://soundcloud.com/search/sounds?q=shoegaze", False),
+        ("https://api.soundcloud.com/tracks/123", False),
+    ],
+)
+def test_soundcloud_track_url_filter_accepts_only_individual_public_tracks(url: str, expected: bool) -> None:
+    assert is_individual_track_url(url) is expected
+
+
+def test_soundcloud_provider_rejects_collection_urls_before_oembed() -> None:
+    async def fake_fetch_json(url: str, *, params: dict, headers: dict) -> object:
+        raise AssertionError("collection URLs should be rejected before oEmbed")
+
+    provider = SoundCloudProvider(fetch_json=fake_fetch_json)
+
+    with pytest.raises(ValueError, match="individual track"):
+        asyncio.run(provider.resolve_embed_url("https://soundcloud.com/ofmonstersandmen/sets/songs"))
+
+
+def test_soundcloud_provider_rejects_oembed_collection_payloads() -> None:
+    async def fake_fetch_json(url: str, *, params: dict, headers: dict) -> object:
+        return {
+            "provider_name": "SoundCloud",
+            "title": "Album by Example Artist",
+            "html": '<iframe src="https://w.soundcloud.com/player/?url=https%3A//api.soundcloud.com/playlists/123"></iframe>',
+        }
+
+    provider = SoundCloudProvider(fetch_json=fake_fetch_json)
+
+    with pytest.raises(ValueError, match="individual track"):
+        asyncio.run(provider.resolve_embed_url("https://soundcloud.com/example-artist/album-song"))
 
 
 def test_soundcloud_provider_uses_bearer_token_without_client_id_param() -> None:

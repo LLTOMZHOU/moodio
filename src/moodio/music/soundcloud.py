@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from moodio.domain.models import QueueItem
@@ -62,6 +63,9 @@ class SoundCloudProvider:
         return _track_from_payload(payload)
 
     async def resolve_embed_url(self, soundcloud_url: str) -> ProviderTrack:
+        if not is_individual_track_url(soundcloud_url):
+            raise ValueError("SoundCloud URL must point to an individual track")
+
         payload = await self._fetch_json(
             self.oembed_url,
             params={"format": "json", "url": soundcloud_url},
@@ -121,6 +125,9 @@ def _track_from_payload(payload: dict[str, Any]) -> ProviderTrack:
 def _track_from_oembed(soundcloud_url: str, payload: dict[str, Any]) -> ProviderTrack:
     title = str(payload.get("title") or "SoundCloud Track")
     track_title, artist = _split_title_and_artist(title)
+    embed_url = _embed_playback_url(soundcloud_url, payload.get("html"))
+    if not _is_api_track_embed(embed_url):
+        raise ValueError("SoundCloud oEmbed response did not resolve to an individual track")
 
     return ProviderTrack(
         provider="soundcloud",
@@ -130,7 +137,7 @@ def _track_from_oembed(soundcloud_url: str, payload: dict[str, Any]) -> Provider
         album=None,
         duration_seconds=1,
         artwork_url=payload.get("thumbnail_url"),
-        playback_ref=f"soundcloud:embed:{soundcloud_url}",
+        playback_ref=f"soundcloud:embed:{embed_url}",
         external_url=soundcloud_url,
         stream_url=None,
         embed_html=payload.get("html"),
@@ -147,3 +154,61 @@ def _split_title_and_artist(title: str) -> tuple[str, str]:
         track_title, artist = title.rsplit(" by ", maxsplit=1)
         return track_title.strip() or title, artist.strip() or "SoundCloud"
     return title, "SoundCloud"
+
+
+def _embed_playback_url(fallback_url: str, html: object) -> str:
+    if not isinstance(html, str):
+        return fallback_url
+    match = re.search(r'src="([^"]+)"', html)
+    if not match:
+        return fallback_url
+    parsed = urlparse(match.group(1))
+    embedded_url = parse_qs(parsed.query).get("url")
+    if not embedded_url or not embedded_url[0]:
+        return fallback_url
+    return unquote(embedded_url[0])
+
+
+def is_individual_track_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if parsed.netloc.lower().removeprefix("www.") != "soundcloud.com":
+        return False
+
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if len(segments) != 2:
+        return False
+
+    if segments[0].lower() in {
+        "charts",
+        "discover",
+        "feed",
+        "groups",
+        "messages",
+        "mobile",
+        "pages",
+        "popular",
+        "search",
+        "settings",
+        "stream",
+        "tags",
+        "upload",
+        "you",
+    }:
+        return False
+
+    if segments[1].lower() in {"albums", "likes", "playlists", "reposts", "sets", "tracks"}:
+        return False
+
+    return True
+
+
+def _is_api_track_embed(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if parsed.netloc.lower() != "api.soundcloud.com":
+        return False
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    return len(segments) == 2 and segments[0] == "tracks" and segments[1].isdigit()

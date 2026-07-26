@@ -49,3 +49,23 @@ def test_state_store_rejects_negative_limits(tmp_path: Path) -> None:
         pass
     else:
         raise AssertionError("recent_context() should reject negative limits")
+
+
+from moodio.state_store import ListenerPreferences
+
+
+def test_state_store_persists_listener_preferences(tmp_path: Path) -> None:
+    db_path = tmp_path / "moodio.db"
+
+    first_store = StateStore(db_path)
+    expected = ListenerPreferences(
+        source="apple_music",
+        raw_text="Phoebe Bridgers\nJapanese Breakfast\nRainy Day",
+        seed_queries=["Phoebe Bridgers", "Japanese Breakfast", "Rainy Day indie"],
+    )
+    first_store.save_listener_preferences(expected)
+
+    second_store = StateStore(db_path)
+    restored = second_store.get_listener_preferences()
+
+    assert restored == expected

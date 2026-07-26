@@ -1,5 +1,10 @@
 .venv/
 .env
+.codex/config.toml
+.webui_secret_key
+moodio.db
+var/
+.lazyweb/
 .pytest_cache/
 __pycache__/
 *.pyc

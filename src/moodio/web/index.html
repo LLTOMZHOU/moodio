@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>moodio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="moodio-console">
+      <section class="radio-frame">
+        <header class="radio-top">
+          <div>
+            <p class="eyebrow">private station</p>
+            <h1>moodio</h1>
+          </div>
+          <div class="signal-stack" aria-label="station signal status">
+            <span class="on-air-light"></span>
+            <span class="signal-label">on air</span>
+            <span id="status-line">connecting...</span>
+          </div>
+        </header>
+
+        <div class="radio-body">
+          <aside class="hardware-column" aria-hidden="true">
+            <div class="speaker-grille"></div>
+            <div class="hardware-badge">
+              <span>SK-1</span>
+              <span>104.9 live</span>
+            </div>
+          </aside>
+
+          <article class="player-panel">
+            <div class="panel-header tuner-header">
+              <div>
+                <p class="eyebrow">now playing</p>
+                <h2 id="track-title">Loading...</h2>
+                <p id="track-artist"></p>
+              </div>
+              <span id="station-status" class="pill">offline</span>
+            </div>
+
+            <div class="radio-dial" aria-hidden="true">
+              <span>88</span>
+              <span>92</span>
+              <span>96</span>
+              <span>100</span>
+              <span>104</span>
+              <span>108</span>
+              <i></i>
+            </div>
+
+            <div class="vu-row" aria-hidden="true">
+              <div class="vu-meter"><span></span><span></span><span></span><span></span><span></span></div>
+              <div class="vu-meter"><span></span><span></span><span></span><span></span><span></span></div>
+            </div>
+
+            <!-- Hidden SoundCloud embed: functional for audio playback, invisible visually -->
+            <div id="embed-slot" class="embed-slot" aria-hidden="true"></div>
+            <audio id="tts-audio" controls hidden></audio>
+            <p id="tts-hint" class="hint" hidden></p>
+
+            <a id="soundcloud-open-link" class="soundcloud-open-link" href="#" target="_blank" rel="noreferrer" hidden>
+              Open on SoundCloud ↗
+            </a>
+
+            <div class="button-row">
+              <button data-action="previous">Prev</button>
+              <button data-action="play">Play</button>
+              <button data-action="pause">Pause</button>
+              <button data-action="next">Next</button>
+              <button id="favorite-button">Fav</button>
+            </div>
+          </article>
+
+          <aside class="control-stack">
+            <article class="control-card queue-panel">
+              <p class="eyebrow">up next</p>
+              <ol id="queue-list" class="queue-list"></ol>
+            </article>
+          </aside>
+
+          <div class="chat-panel">
+            <div class="panel-header">
+              <p class="eyebrow">conversation</p>
+              <span id="chat-status" class="pill ghost">live</span>
+            </div>
+            <div id="chat-messages" class="chat-messages"></div>
+            <form id="command-form" class="chat-input-row">
+              <button class="voice-button" type="button" aria-label="Voice input coming later" disabled>Mic</button>
+              <input
+                id="command-input"
+                name="command"
+                placeholder="Talk to moodio — request a song, describe a mood, or just say hi"
+                autocomplete="off"
+              />
+              <button type="submit">Send</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <p id="message" class="message" role="status"></p>
+    </main>
+
+    <script src="https://w.soundcloud.com/player/api.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

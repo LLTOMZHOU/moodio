@@ -1,801 +1,590 @@
-# Music Agent Architecture
+# Moodio architecture
 
-## Companion Docs
+**Status:** proposed v0.2 target architecture. This document describes the intended direction, not a claim that every module already exists.
 
-- `SPEC.md`: product scope, user experience, and acceptance criteria
-- `UI_DESIGN_PROMPT.md`: ready-to-paste prompt for Claude Design
-- `TEST_PLAN.md`: TDD strategy, test seams, and session guardrails
+## Design goal
 
-## Goal
+Moodio is a personal, long-running DJ. It should keep a station coherent over time, learn from a listener's actions and instructions, and remain responsive when the listener takes direct control.
 
-Build `moodio`, a personal AI radio / voice DJ system that follows the layered station idea already captured in the repo docs, but replaces the `claude -p` subprocess with the latest compatible OpenAI Agents SDK as the base harness.
-
-The important shift is:
-
-- the model runtime is no longer a black-box CLI subprocess
-- tool access, memory, scheduling, and action output become first-class parts of the app
-- the overall product shape still stays the same: taste files + music APIs + context assembly + orchestration + TTS + playback + desktop app shell
-
-## Core Decision
-
-Use the latest compatible OpenAI Agents SDK as the base harness and turn orchestrator, not as the whole product.
-
-That means:
-
-- the app owns state, scheduling, APIs, and device integration
-- the agent owns reasoning over the current turn and deciding which tools to call
-- the SDK's tool, prompt, and hook surfaces are the first place to extend runtime behavior
-- the final model output is the short spoken DJ line; app state changes happen through typed tools
-
-This is a better fit than a `claude -p` wrapper because the harness becomes explicit and portable.
-
-## System Shape
-
-Keep the four-layer system shape:
-
-1. Inputs and external services
-2. Local orchestration modules
-3. Runtime turn assembly and agent loop
-4. Delivery surfaces: desktop app shell, HTTP API, audio stream, scheduler hooks
-
-## Product Experience
-
-This is not just "an agent with music tools". It is a personal radio station with a persistent on-air identity.
-
-The UI should preserve these qualities:
-
-- broadcast feel rather than chatbot feel
-- one named station host with a stable persona: `moodio`
-- visible live state: `on air`, `speaking`, `playing`, `connected`
-- synced transcript while TTS is speaking
-- music-first controls, with chat as a secondary lane
-- support an expanded desktop console and a compact widget-like collapsed state
-
-The desktop UI should therefore be treated as a station console, not a generic assistant dashboard.
-
-## Layer 1: Inputs And External Services
-
-These are the core external inputs and services the system depends on.
-
-### User corpus
-
-Persistent preference files that define the station identity:
-
-- `data/user/taste.md`
-- `data/user/routines.md`
-- `data/user/playlists.json`
-- `data/user/mood_rules.md`
-- `data/user/persona.md`
-
-These should be treated as durable editorial inputs, not ephemeral chat history.
-
-### Music services
-
-Initial target:
-
-- SoundCloud embed playback through oEmbed
-- provider adapters for future NetEase, Audius, or other music APIs
-
-Expose them through app-owned tool wrappers such as:
-
-- `queue_soundcloud_embed(url)`
-- `search_tracks(query, mood, limit)`
-- `get_track_details(track_id)`
-- `get_recommendations(seed_track_ids, mood, limit)`
-- `get_lyrics(track_id)`
-- `resolve_playable_url(track_id)`
-
-### Voice and context services
-
-Initial target tools:
-
-- `get_weather_snapshot()`
-- `synthesize_tts(script, voice, style)`
-- `play_audio_on_device(url_or_path, target_device)`
-- `notify_feishu(message)`
-
-Keep device control and TTS outside the model. The agent can request them, but never executes them directly.
-
-## External APIs
-
-The system should keep external providers behind narrow adapter interfaces. The application should depend on provider capabilities, not provider-specific payloads.
-
-### MVP-required providers
-
-#### Music provider
-
-Required capabilities:
-
-- track search
-- track metadata
-- playable URL, stream source, or frontend-playback identifier
-- recommendations if available
-
-Strongly preferred:
-
-- lyrics
-- album art
-
-Suggested adapter:
-
-- `MusicProvider`
-
-#### TTS provider
-
-Required capabilities:
-
-- speech synthesis
-- voice selection
-- audio file or stream output
-
-Strongly preferred:
-
-- duration metadata
-- segment timing metadata if available
-
-Suggested adapter:
-
-- `TTSProvider`
-
-#### LLM provider
-
-Required capabilities:
-
-- model invocation for the station agent
-- structured output support
-- tool-calling support
-- streaming support for interactive runs
-
-Suggested adapter:
-
-- `ModelProvider`
-
-#### Weather provider
-
-Required capabilities:
-
-- current weather snapshot
-
-Suggested adapter:
-
-- `WeatherProvider`
-
-### Optional later providers
-
-- standalone lyrics provider if the music provider does not expose lyrics well
-- speech-to-text if microphone input becomes important
-- notification providers if out-of-app nudges become useful
-- listening-history integrations if external taste signals become important
-
-### Not in MVP
-
-- calendar providers
-- user accounts and auth providers
-- social music APIs
-- browser automation providers
-
-### Ownership boundary
-
-These parts should stay app-owned even when external providers are used:
-
-- playback engine
-- queue state
-- favorites
-- transcript state
-- SQLite persistence
-- executor logic
-
-## Frontend/Backend Boundary
-
-The frontend and backend are co-located. The backend is expected to run as a local server, not as a public internet service.
-
-### Recommended transport split
-
-Use:
-
-- HTTP for commands, current snapshots, and asset fetches
-- WebSocket for live state, transcript, queue, and playback lifecycle events
-
-Suggested shape:
-
-- `POST /api/command`
-- `POST /api/play`
-- `POST /api/pause`
-- `POST /api/next`
-- `POST /api/previous`
-- `POST /api/favorite`
-- `GET /api/now`
-- `GET /api/transcript/current`
-- `GET /api/tts/:id`
-- `WS /api/stream`
-
-### Playback ownership
-
-The frontend should own actual playback sequencing and transport state.
-
-The backend should own:
-
-- agent runs
-- queue planning
-- TTS generation requests
-- persistence
-- policy and pacing rules
-
-The frontend should own:
-
-- MusicKit playback
-- local audio element playback for TTS audio
-- final sequencing between speech and music
-- reporting playback lifecycle events back to the backend
-
-This keeps the backend simple and acknowledges that Apple Music playback belongs on the client side.
-
-## Apple Music Boundary
-
-If Apple Music is used, treat it as a split integration:
-
-- backend: metadata, selection logic, queue planning, and app state
-- frontend: actual playback through MusicKit
-
-The backend should not try to act as a raw Apple Music streaming proxy or replace MusicKit playback.
-
-For Apple-backed tracks, the queue item should therefore be able to store a frontend-playback identifier instead of assuming a raw audio URL.
-
-## Layer 2: Local Orchestration Modules
-
-These modules preserve the intended station runtime structure, but the model-facing boundary is cleaner.
-
-### `router.py`
-
-Acts as a thin hard-edge gate before the model runs.
-
-It should stay deterministic code and only own cases where the app should not spend time asking the model what to do, for example:
-
-- direct transport and favorite actions
-- empty queue or explicit recovery conditions
-- obvious playback lifecycle hooks that should immediately continue the station loop
-
-For everything else, the router should not try to fully classify the user intent itself. It should hand the turn to the station agent and let the model decide which app tools to call.
-
-### `context_builder.py`
-
-Builds the model input from six buckets:
-
-1. system instructions
-2. user corpus
-3. environment snapshot
-4. persisted memory
-5. latest user input and tool results
-6. scheduler trigger payload
-
-This module should own:
-
-- trimming
-- recency rules
-- what enters the prompt versus what stays in app state
-- conversion into the SDK input format
-
-### `station_agent.py`
-
-Defines the main agent:
-
-- instructions: act like the station brain / DJ
-- tools: only app-owned tools
-- output type: plain text, intended for TTS
-
-This agent is the runtime "brain" module, implemented as an SDK `Agent`.
-
-### `scheduler.py`
-
-Owns wall-clock and periodic triggers such as:
-
-- hourly mood/weather check
-- playback finished -> decide next segment
-
-The scheduler should never ask the model to decide whether the scheduler exists. It only emits structured trigger events into the runtime.
-
-### `tts.py`
-
-Owns:
-
-- voice selection
-- synthesis provider integration
-- content hashing
-- audio cache layout
-
-Default voice should be male. Voice selection is still configurable, but the product default should not drift.
-
-Suggested cache layout:
-
-- `var/cache/tts/<sha256>.mp3`
-
-### `state_store.py`
-
-Persistent memory and operational state.
-
-Use SQLite first. That is enough for a single-user local system.
-
-Tables:
-
-- `messages`
-- `tool_events`
-- `plays`
-- `prefs`
-- `scheduler_events`
-- `generated_audio`
-
-The model should not read raw tables directly. The app should query and summarize the relevant slices.
-
-## Layer 3: Runtime Turn Loop
-
-This is the heart of the system.
-
-### Trigger types
-
-A run begins from one of these triggers:
-
-- user text input from the desktop app shell
-- direct button action like "next track" or "favorite"
-- natural-language user request like "play something calmer"
-- scheduled event
-- playback lifecycle event like "track ended"
-- external webhook event
-
-### Turn assembly
-
-For each trigger:
-
-1. `router.py` checks whether the trigger is a hard deterministic case.
-2. If yes, the app runs the deterministic path immediately.
-3. Otherwise, `context_builder.py` assembles the current prompt payload.
-4. The app invokes `Runner.run()` or `Runner.run_streamed()` with the station agent.
-5. The agent may call tools.
-6. Tool results are appended into the run.
-7. The agent ends with a concise spoken line for TTS.
-8. App tools have already applied any requested state changes.
-9. State is persisted.
-10. UI and audio state are updated.
-
-This matches the Agents SDK loop directly:
-
-- model call
-- tool calls
-- rerun
-- final output
-
-If needed for latency, the app can add a lightweight first-pass model classification for non-hard-edge triggers:
-
-- no tools
-- tiny prompt
-- strict enum output
-- low token budget
-
-But that should still be treated as part of the model path, not as a large deterministic router.
-
-### Final response contract
-
-Do not use the agent's final response as an executable action object.
-
-The current contract is:
-
-- model-callable tools inspect and mutate app state
-- direct UI actions call the same runtime operations where possible
-- the final model output is only the short spoken line that the app can send to TTS
-- risky state changes belong behind typed app tools, not in free-form text parsing
-
-Tool implementations should enforce product pacing and safety rules:
-
-- between-track speech should usually stay under 20 seconds
-- overlong speech should be clipped or rejected before synthesis
-
-Tool boundaries should distinguish between:
-
-- deterministic player actions such as `next`, `pause`, `resume`, `favorite`
-- agent-requested state changes such as `queue_track`, `set_talk_density`, and `save_memory_note`
-
-### Agent structure
-
-Start with one orchestrator agent, not many agents.
-
-Initial design:
-
-- one `StationAgent`
-- specialist work happens through tools, not handoffs
-
-Why:
-
-- the domain is still narrow
-- tool boundaries are clearer than agent boundaries
-- fewer hidden transcripts
-- easier debugging
-
-Later, if needed, split into:
-
-- `TasteEditorAgent`
-- `MusicResearchAgent`
-
-But the first version should keep one agent in charge.
-
-## Layer 4: Delivery Surfaces
-
-### Desktop app shell
-
-The user-facing surface should behave like a desktop music app first, even if implemented with web technology.
-
-The shell should support two presentation states:
-
-- expanded station console
-- compact widget-like collapsed player
-
-### Desktop station console
-
-Key regions:
-
-- station header with identity, connection state, and theme controls
-- large ambient clock and day/date block
-- on-air state indicator
-- now-playing rail with transport controls, queue, favorite, and volume
-- live station feed with the DJ's latest spoken segment
-- lightweight listener input box for "say something to the DJ"
-- clear separation between direct transport controls and AI steering
-
-This should feel like a persistent session, not a page that refreshes around each prompt.
-
-### Collapsed widget state
-
-Key regions:
-
-- compact now-playing identity bar
-- primary transport controls
-- progress state
-- quick favorite action
-- one clear affordance to expand back to the full console
-
-### Initial screens and states
-
-Initial screens:
-
-- desktop station console
-- collapsed widget player
-- current spoken transcript
-- queue and recent plays
-- taste profile editor
-- recent memory/events
-
-Core live states:
-
-- `idle`
-- `thinking`
-- `speaking`
-- `playing`
-- `recovering`
-- `offline`
-
-### HTTP API
-
-Suggested first endpoints:
-
-- `GET /api/now`
-- `GET /api/transcript/current`
-- `GET /api/history/recent`
-- `POST /api/command`
-- `POST /api/play`
-- `POST /api/pause`
-- `POST /api/resume`
-- `POST /api/next`
-- `POST /api/previous`
-- `POST /api/favorite`
-- `WS /api/stream`
-
-### Internal event bus
-
-Even for a local-first app, define an internal event shape early:
-
-- `user.command.received`
-- `user.transport_action.received`
-- `scheduler.triggered`
-- `tts.segment.started`
-- `tts.audio.ready`
-- `tts.segment.completed`
-- `music.playback.started`
-- `music.playback.near_end`
-- `playback.track_ended`
-- `agent.run.started`
-- `agent.run.completed`
-- `tts.completed`
-- `queue.updated`
-
-This will keep the UI, playback engine, and agent runtime decoupled.
-
-## Recommended Repository Shape
+The product owns the decision and control system. Music stays with remote providers.
 
 ```text
-music_agent/
-  ARCHITECTURE.md
-  pyproject.toml
-  src/music_agent/
-    app.py
-    config.py
-    router.py
-    context_builder.py
-    station_agent.py
-    executor.py
-    scheduler.py
-    tts.py
-    playback.py
-    state_store.py
-    api/
-      server.py
-      schemas.py
-    tools/
-      music.py
-      weather.py
-      memory.py
-      playback.py
-      tts.py
-    prompts/
-      system.md
-      output_schema.json
-    domain/
-      events.py
-      models.py
-  web/
-    README.md
-  data/
-    user/
-      taste.md
-      routines.md
-      playlists.json
-      mood_rules.md
-      persona.md
-  var/
-    cache/
-      tts/
-    state/
-      music_agent.db
+Moodio owns: station state, queue, event history, listener profile,
+             agent context, policies, and the browser playback control plane.
+
+Providers own: music catalogues, media delivery, and provider-specific access.
 ```
 
-## Agents SDK Integration
+This keeps the app personal without turning it into a private music repository or an audio downloader.
+
+## Non-negotiable constraints
+
+- Do not download, retain, or redistribute music tracks.
+- Do not circumvent paywalls, DRM, login requirements, bot checks, or geographic restrictions. Treat tracks a provider cannot serve in the listener's context as unavailable.
+- Do not expose provider cookies, credentials, or temporary media URLs to the agent or browser.
+- A model may choose only from candidates returned by a provider interface.
+- Human controls and agent tools mutate the same station state through the same control module.
+- The agent is long-lived in memory, not an unbounded process: the runtime wakes it for bounded, observable runs.
+- Explicit listener instructions outrank revisable taste notes.
 
-Use the latest compatible OpenAI Agents SDK release as the runtime loop and base harness, not as a replacement for app architecture.
+## Terms
 
-The implementation stance is:
+These terms are used consistently throughout this document.
 
-- start from the SDK's built-in agent loop rather than building a custom harness first
-- add app-owned tools, prompts, hooks, and typed tool boundaries on top of that base
-- keep long-lived state, scheduling, playback policy, and persistence in app code
-- upgrade the SDK deliberately as part of normal dependency maintenance instead of pinning the design to one old release
+- **Station**: one listener's persistent DJ experience: current playback, queue, listener profile, and active session.
+- **Candidate**: provider metadata that is eligible for agent consideration but is not yet queued.
+- **Track reference**: a stable `{provider, provider_track_id}` pair.
+- **Program item**: a station-owned music or commentary item in the ordered Queue.
+- **Music item**: a program item that refers to a resolved track.
+- **Commentary item**: a program item containing DJ editorial content for a natural transition.
+- **Direct response**: an immediate DJ answer that bypasses the Queue.
+- **Playback handle**: an opaque, short-lived server-side reference used by the browser player. It is not a provider URL.
+- **Station event**: an immutable, app-owned fact about a Station change or a meaningful player/scheduler observation. It is neither a conversation item nor raw tool telemetry.
+- **Internal Station-event item**: a compact invisible rendering of a meaningful Station event retained in the Station session as application context. It is not a Listener message and never by itself starts a DJ run.
+- **Station feed**: the Listener-facing ordered projection of relevant Station events and Direct responses.
+- **Taste note**: a derived, editable plain-language conclusion about current taste.
+- **Listener instruction**: an explicit listener rule, such as “no vocals while I work.”
+- **Station controller**: the module that serializes state changes and emits station events.
+- **Provider adapter**: a concrete implementation of the music-provider interface.
 
-### Primary use
+## System shape
 
-- `Agent(...)` for the station brain
-- `function_tool` wrappers for app capabilities
-- prompt and hook surfaces for run-time instrumentation, guardrails, and traceability
-- `Runner.run_streamed(...)` for interactive runs
-- `Runner.run(...)` for scheduler/background turns
+```mermaid
+flowchart LR
+  UI["Listener UI"] -->|direct commands| Controller["Station controller"]
+  UI -->|natural-language messages| Jobs
+  Agent["DJ agent"] --> Controller
+  Scheduler["Scheduler"] --> Controller
+  Player["Browser player"] -->|playback events| Controller
 
-### Memory strategy
+  Controller --> Store["Station storage\nstate + profile + tasks + feed"]
+  Controller --> Jobs["DJ job runner"]
+  Jobs --> Agent
+  Agent -->|tools| Discovery["Music discovery module"]
+  Discovery --> Provider["YouTube provider adapter\nyt-dlp"]
+  Controller --> Playback["Playback gateway"]
+  Playback --> Provider
+  Playback --> Player
+  Research["Release / real-world research"] --> Jobs
+```
 
-Do not rely on provider-managed conversation state as the primary memory system.
+The station controller is the central module. No caller—not the UI, agent, scheduler, or player—edits queue state directly.
 
-Prefer:
+## Modules and seams
 
-- app-owned SQLite state
-- app-owned context assembly
-- passing a fresh, trimmed input each turn
+### Station controller
 
-This keeps the system portable across providers and reduces hidden coupling.
+**Interface:** accepts Station commands, returns a new Station snapshot, appends durable Station events, and publishes feed updates.
 
-### Model/provider boundary
+**Implementation responsibilities:**
 
-Treat the model provider as swappable.
+- serialize queue and transport mutations
+- enforce command idempotency and station revision checks
+- give human commands precedence over stale agent work
+- reject a stale DJ Queue command with structured `stale_queue_revision` data; permit one fresh append-only retry only when Queue health still requires it
+- dispatch playback resolution after a track becomes current
+- enqueue coalesced DJ jobs when station conditions require attention
+- append relevant domain events to the persistent Station feed and publish their live updates
 
-Use a model adapter boundary like:
+**Leverage:** every actor uses the same small interface, so a human skip and an agent skip have identical semantics and are equally visible to the next agent run.
 
-- default provider: OpenRouter-backed OpenAI-compatible model
-- later options: direct OpenAI, Anthropic, local model
+### Music discovery module
 
-The app should never bake provider quirks into the domain logic.
+**Interface:** turns a musical query and optional station context into normalized search results and queueable candidates.
 
-## Tool Design Principles
+It owns:
 
-Tools should be narrow, typed, and side-effect aware.
+- provider searches and provider-specific ranking
+- candidate normalization and deduplication
+- availability checks
+- short-lived metadata caching
+- filtering of low-quality results such as covers, remixes, live recordings, or unrelated videos when the request calls for an original release
 
-Split them into:
+It does not own queue mutations or playback transport.
 
-### Read tools
+### Music-provider seam
 
-Safe informational tools:
+Moodio depends on the following provider interface, not on yt-dlp command output or any provider payload directly.
 
-- `read_current_weather`
-- `web_search`
-- `read_recent_plays`
-- `read_taste_profile`
-- `search_tracks`
-- `read_queue`
+```python
+class MusicProvider(Protocol):
+    key: str
 
-### Write or action tools
+    async def search_tracks(
+        self,
+    query: str,
+    *,
+    limit: int,
+    context: DiscoveryContext,
+) -> list[DiscoveryResult]: ...
 
-Side-effectful tools:
+    async def resolve_track(self, ref: TrackRef) -> ResolvedTrack: ...
 
-- `queue_track`
-- `replace_queue`
-- `synthesize_station_line`
-- `send_to_output_device`
-- `favorite_track`
-- `set_talk_density`
-- `save_memory_note`
-- `schedule_follow_up`
+    async def open_stream(self, track: ResolvedTrack) -> ProviderStream: ...
 
-For risky write tools, add executor confirmation rules in code, not in prompt text.
+    async def health(self) -> ProviderHealth: ...
+```
 
-Favorites should be available both as a direct UI action and as a model-callable capability. The model should be able to offer the action conversationally, but the underlying favorite operation stays deterministic app code.
+The first adapter to evaluate is the experimental `YouTubeProvider`. SoundCloud remains a deprecated legacy adapter until it can satisfy the same interface cleanly.
 
-## Run Modes
+### Experimental YouTube provider adapter
 
-The app is not one generic chatbot. Preserve that.
+`YouTubeProvider` uses a pinned yt-dlp binary as a short-lived resolver. For Music discovery it constructs a YouTube Music search URL, normalizes its provider-supported sections—songs, albums, artists, videos, and playlists—and tags each result with its kind.
 
-Define explicit run modes, but let the model choose between the editorial modes on non-hard-edge turns:
+```text
+search(query)
+  -> https://music.youtube.com/search?q=<query>
+  -> yt-dlp --no-config --no-cache-dir --simulate --flat-playlist --dump-json
+  -> mixed, normalized search results
 
-### `radio_continue`
+resolve_track(video_id)
+  -> refresh canonical metadata and availability
 
-Default autonomous station behavior:
+open_stream(video_id)
+  -> yt-dlp obtains a temporary best-audio URL
+  -> server opens the upstream stream
+```
 
-- inspect playback and context
-- choose what to say
-- choose what to play next
-- keep the queue warm with at least 1-2 upcoming tracks when possible
+The direct-search UI is one Apple-Music-like fuzzy search box. It groups returned results with pills such as Songs, Artists, Albums, Videos, and Playlists; these are result labels, not a provider-specific search form. A Song or playable Video can become a Listener selection, with explicit **Play now** and **Queue next** controls. Both verify provider availability before committing. **Play now** then interrupts the current Music item, records it as skipped, and does not reinsert it; on failure it preserves current playback and reports the failure. **Queue next** only programs the verified selection without changing transport. Repeated Queue next choices append in click order to a Listener-priority segment immediately after the current item; the DJ cannot interpose music there, and any Anchored Commentary moves with the displaced target. An Artist, Album, or Playlist is a Browse result that opens further provider results before anything is queued. When the provider can reliably and quickly expand an artist or album, the UI may show that richer result; otherwise it falls back to a fuzzy follow-up search. Genre, mood, and activity are not a verified provider filter: the Listener or DJ expresses them as free-text queries, and the DJ may use bounded research to formulate or rank those queries. Discovery returns metadata only; playback remains a separate, just-in-time availability check.
 
-### `user_request`
+The adapter must:
 
-Direct response to user input such as:
+- run yt-dlp with timeouts, cancellation, and bounded output
+- classify failures (`unavailable`, `login_required`, `bot_check`, `geo_blocked`, `extract_failed`)
+- report authentication, bot-check, or regional restrictions as unavailable rather than trying to bypass them
+- be updateable independently from the app
+- never write full media tracks to disk
 
-- "play something warmer"
-- "less vocals"
-- "what are you playing now?"
-- "talk less for a while"
-- "talk more for a while"
+yt-dlp is an experimental implementation dependency, not a Moodio API. A later provider can replace it without changing the station controller or agent tools. A prototype must establish that it is reliable enough for this Listener before broader work depends on it.
 
-### `recovery`
+#### Provider-spike gate
 
-Used when:
+The spike tests a small representative set of direct searches: song, artist, album, genre, and mood. It records result quality, search and resolve latency, provider failure categories, and whether a selected candidate starts in the browser without saving audio. The gate is passed when ordinary searches can produce at least one real playable candidate reliably enough for personal use; Apple-Music-level catalogue navigation is not required.
 
-- queue is empty
-- music API failed
-- TTS failed
-- provider request failed
+### Playback gateway
 
-The recovery path should be deterministic where possible.
+**Interface:** given the current queue item, expose an app-owned playback URL to the browser and accept lifecycle reports from the browser.
 
-## Transcript And Timing Model
+```text
+GET  /api/playback/{queue_item_id}
+POST /api/events/playback
+```
 
-Speech is not just audio output. It is a timed live artifact that the UI should render.
+The gateway asks the provider adapter for a fresh upstream stream, proxies it, and preserves browser-required range behavior. It does not disclose temporary Google media URLs.
 
-That means the runtime should emit transcript segments with timestamps:
+The browser owns its `<audio>` element and reports events such as buffering, started, paused, ended, near-end, and error. The server remains authoritative for what *should* be playing.
 
-- segment text
-- segment start time
-- optional word or phrase timing
-- associated track or station mode
+For direct Listener controls, the browser may optimistically render a pending action. Pause/resume also act on the local audio element immediately for responsiveness. Queue changes, skip, previous, and favorite show pending state but render the controller-confirmed snapshot as durable truth; on rejection or reconnect, the browser reconciles to that snapshot rather than maintaining a second Queue state machine. The Listener may drag/reorder or remove any upcoming Music item, whether Listener- or DJ-programmed; Anchored Commentary moves or is removed with its target, while unanchored Commentary is not independently draggable in v0.2. A removal is a meaningful event the DJ may later consider, and it may refill only if Queue health requires it. Previous restarts the current Music item when it has played for more than roughly five seconds; otherwise it attempts to replay the preceding completed Music item after a fresh provider resolution. If that item is unavailable, the Station reports it rather than substituting another track.
 
-Minimum viable approach:
+After a local server restart, persisted Queue/program state and the last known current item are retained, but playback is marked `recovering` until the browser reconnects and reports its actual player state. The server never resumes a provider stream merely because persisted state said it had been playing. A browser report that identifies a different track is an unreconciled recovery state, not evidence that the program changed: the controller does not infer or rewrite playback history and waits for an unambiguous player report or an explicit Listener action. While recovery is unresolved, the DJ may still perform safe append-only Queue programming after existing Listener choices, but may not resume, replace, or reorder playback.
 
-- store the exact TTS script
-- record segment start time and duration
-- stream coarse transcript chunks to the UI
+### DJ job runner
 
-Better later:
+The DJ does not run forever in one model call. The job runner creates bounded runs from durable triggers:
 
-- word-level timing for transcript highlighting
-- waveform segments derived from actual speech audio
+- listener sends natural language
+- queue falls below its target
+- player reports near-end or ended
+- playback fails
+- one low-priority editorial pulse per active hour
+- scheduled research or taste-distillation run
+- a due Station task created by the DJ
 
-This requirement should influence the executor and TTS interfaces from day one.
+The runner coalesces equivalent work. For example, `queue_low`, `near_end`, and a cadence tick should normally create one `keep_station_healthy` job, not three concurrent agent turns. All Station runs use one serialized lane. A Listener message has priority over scheduled or operational work; background work that has not started is deferred or coalesced into a later useful run. A background run has a configurable ~20-second wall-clock budget, checked only between model and tool steps; when it expires, it ends cleanly and a later trigger can continue the work. Listener-requested runs use a looser budget. If a background run has already started, it finishes its current bounded step rather than being cancelled mid-mutation; direct Listener controls still execute immediately through the controller, and the Listener message runs next. A direct control's durable Station event is written immediately, while its Internal Station-event item is enqueued and flushed into the shared session at the next turn boundary so an in-flight run never receives a concurrent session mutation.
 
-## Audio Sequencing
+Queue health and recovery triggers are harness-owned operational guarantees. The editorial pulse is also harness-owned but deliberately quiet: it gives a new Station a predictable chance to refresh programming, consider a profile update, or make a useful task without requiring the DJ to have previously scheduled itself. An active listening window begins when playback starts and ends on an explicit Listener pause; its hourly pulse does not depend on the UI remaining open. The DJ may create, change, or cancel more specific Station tasks. While playback is paused, a background run may research, revise the profile, or safely append music for any relevant reason—such as queue health or a new release by an artist of clear Listener interest. It must not resume transport, reorder or replace Listener choices, or surface immediate/audible commentary.
 
-The frontend should be the final audio sequencer.
+### Station task scheduler
 
-Recommended model:
+A Station task is a small persisted record: a plain-language instruction, its next run time or recurrence, and whether it remains active. The DJ manages it through `schedule_station_task`, `list_station_tasks`, `update_station_task`, and `cancel_station_task`.
 
-1. backend decides the next spoken line and upcoming track queue
-2. backend generates or retrieves cached TTS audio
-3. frontend receives a playback plan over WebSocket or snapshot refresh
-4. frontend plays TTS audio locally
-5. when TTS completes, frontend starts the queued music item through its music playback layer
-6. frontend reports music lifecycle events back to the backend
-7. backend uses `near_end` and `ended` signals to prepare the next transition
+When a task becomes due, the scheduler creates one bounded DJ job with that instruction as its trigger. v0.2 schedules only while the local Moodio service is running; on service startup it coalesces overdue tasks and operational triggers into one catch-up job rather than relying on an OS background daemon. Tasks do not run arbitrary code, receive extra permissions, or keep a model invocation alive. The Listener can inspect and remove them alongside the Listener profile.
 
-This makes speech/music coordination explicit without requiring the backend to be the actual audio renderer.
+### DJ agent
 
-### Playback lifecycle events
+The DJ agent is one persistent personality with one Station session. Every bounded run—natural-language Listener interaction, queue-health work, or due Station task—continues that same compacted conversation, receives the compact profile and a small run header, and reads fresh operational state through focused tools.
 
-The frontend should send at least:
+The agent owns:
 
-- `music.playback.started`
-- `music.playback.progress`
-- `music.playback.near_end`
-- `music.playback.ended`
-- `music.playback.paused`
-- `music.playback.resumed`
+- editorial judgment
+- natural-language interpretation
+- candidate exploration and selection
+- concise DJ speech
+- suggesting concise, revisable taste notes from meaningful listening signals
 
-`near_end` should fire early enough for the backend to prepare the next speech + track transition without a gap.
+The runtime owns:
 
-### Queue policy
+- tool schemas and authorization
+- queue correctness and concurrency
+- candidate and provider validation
+- scheduling and retry policy
+- storage and event publication
 
-The runtime should aim to keep:
+Start with one agent and deep tools. Add specialist agents only if a real seam appears, such as a separate release-research workflow with its own evaluation and budget.
 
-- the current track
-- at least 1 queued next track
-- preferably 2 queued next tracks when provider state allows
+### Listener profile module
 
-Speech should be attached to transitions, not treated as an always-on second queue.
+This module keeps durable personalization deliberately small and legible.
 
-## Safety And Control
+It owns:
 
-The app should not trust model output blindly.
+- the Listener's explicit instructions
+- a few revisable plain-language taste notes
+- a compact profile supplied to the DJ as context
+- an inspectable revision history with correction, reset, deletion, and diff support
 
-Validation rules:
+The initial profile may be one editable Markdown document or a small JSON object with sections such as `instructions`, `taste_notes`, and `recent_signals`. It is not a preference graph, scoring system, or strict taxonomy. The runtime owns its location and audit trail; the DJ receives scoped read/update tools, never a generic filesystem tool. A profile update applies automatically and produces an inspectable revision; it does not require approval or a notification. Automatic updates retain a one-sentence reason in revision/event metadata, so the editable profile stays uncluttered while the UI can show the reason beside its diff. The runtime may preserve useful recent activity separately, but should only promote it into the profile when a simple explanation would make sense to the Listener.
 
-- final output must match schema
-- only known track IDs can be queued
-- playback commands must target known devices
-- TTS text length should be capped
-- memory writes should be summarized and bounded
-- scheduler writes must respect rate limits
+### Research module
 
-Add app-level fallbacks:
+This module catches up on relevant real-world music context, initially through bounded web or feed research.
 
-- if the model fails, continue current queue or play safe fallback playlist
-- if TTS fails, skip speech and continue music
-- if music search fails, reuse recent good candidates
+It can:
 
-## MVP Scope
+- revisit artists or release interests recorded in the Listener profile or a due Station task
+- enrich a request with current context
+- create a research observation that the DJ may use on an editorial check-in
 
-The first shippable version should be intentionally small.
+It cannot queue arbitrary external content. A release notice must still flow through `search_tracks` and normal candidate selection.
 
-### MVP capabilities
+## Core contracts
 
-- one user
-- one playback target
-- one TTS provider
-- one music provider
-- one main station agent
-- SQLite memory
-- desktop app shell with expanded and collapsed states
-- explicit scheduler triggers
+### Track candidate
 
-### Not in MVP
+```json
+{
+  "candidate_id": "youtube:video:abc123",
+  "provider": "youtube",
+  "provider_track_id": "abc123",
+  "title": "Example Track",
+  "artist": "Example Artist",
+  "album": null,
+  "duration_seconds": 248,
+  "artwork_url": "https://...",
+  "external_url": "https://www.youtube.com/watch?v=abc123",
+  "availability": "unknown",
+  "match_reasons": ["title", "artist", "original_release"],
+  "warnings": []
+}
+```
 
-- multi-user support
-- free-form subagent graph
-- autonomous browsing
-- complex long-horizon planning
-- self-editing taste files without review
+Candidates are the only tracks the DJ or Listener may pass to a queue or play command. The Listener may search provider candidates and make a direct Listener selection without DJ approval. Candidate IDs may expire; the provider resolves a stable track reference again at playback time.
 
-## Suggested Build Order
+### Program item
 
-1. Define domain models and typed app-control tools.
-2. Implement SQLite store and event log.
-3. Implement read-only tools: taste, recent plays, weather, music search.
-4. Implement `StationAgent` with mock playback executor.
-5. Add TTS generation and local queue execution.
-6. Add scheduler triggers.
-7. Add desktop app shell and WebSocket stream.
-8. Add recovery paths and observability.
+```json
+{
+  "program_item_id": "pi_01...",
+  "kind": "music",
+  "track": {"provider": "youtube", "provider_track_id": "abc123"},
+  "title": "Example Track",
+  "artist": "Example Artist",
+  "duration_seconds": 248,
+  "requested_by": {"kind": "human", "id": "local-listener"},
+  "reason": "Keeps the warmer electronic thread going.",
+  "status": "queued",
+  "station_revision": 42
+}
+```
 
-## Why This Matches The Screenshot
+For commentary, the same small envelope contains `kind: "commentary"` and `text`. It has no provider track. It may optionally name `for_music_item_id`, anchoring the line as a lead-in to one upcoming Music item; removing or moving that Music item removes or moves its anchored commentary with it. Unanchored Commentary remains valid for general transitions, but the controller never leaves commentary at the Queue tail without a following Music item. Commentary is an editorial option, not a cadence: the DJ uses it only when it genuinely improves a transition or explains a programming move, and treats silence as normal. The Queue stores the DJ's ordered program; the Listener's UI setting decides whether a Commentary item is also rendered as speech, and the delivery layer releases it only after a normal track completion and before the next Music item. A manual skip, pause/resume, playback failure, or other direct/recovery transport intervention suppresses waiting Commentary—including Anchored Commentary when the Listener skips directly to its target—because either the Listener has chosen the pacing or recovery must get music moving again. When Voice mode is off, the delivery layer displays the text as a brief program/feed card, consumes the item, and continues to the next Music item without delaying playback.
 
-This design preserves the original idea:
+Music items store useful metadata for display and memory, but playback resolution always revalidates the provider track.
 
-- user taste corpus remains central
-- music, weather, and voice integrations remain external capability blocks
-- local modules still look like router/context/scheduler/tts/state
-- the runtime still assembles a context window from fixed buckets
-- the frontend is still a desktop app shell plus HTTP/WebSocket contract
+### Station command
 
-The only major replacement is the "brain" box:
+Every mutation has an origin, an idempotency key, and an optional expected revision. Direct controls take this deterministic path immediately; they never wait for model reasoning.
 
-- before: local `claude -p` subprocess with hidden harness behavior
-- now: explicit agent runtime with owned tools, owned state, and plain spoken output
+```json
+{
+  "command_id": "cmd_01...",
+  "origin": "human",
+  "type": "queue.add",
+  "expected_revision": 42,
+  "payload": {"candidate_id": "youtube:video:abc123"}
+}
+```
 
-That is the right replacement if the goal is to understand and control the system rather than wrap somebody else's CLI.
+Core command types:
+
+```text
+queue.add        queue.remove       queue.move
+play_now         transport.play     transport.pause
+transport.skip   transport.previous favorite.set
+instruction.set  instruction.remove profile.note
+```
+
+The controller rejects or refreshes stale agent commands. Human direct controls are never delayed behind agent reasoning.
+
+### Station event
+
+Events are append-only domain facts. They drive the UI, fresh agent context, retries, and future profile updates. A meaningful direct Listener action is additionally queued for rendering into the Station session as a compact, hidden `developer`-role Internal Station-event item at the next safe session boundary. It is clearly marked as application context, not a Listener request, and does not invoke a DJ run or demand acknowledgement. The event feed remains authoritative; session items are a model-facing projection that may later be compacted. Raw agent-tool telemetry and cosmetic controls such as volume/seek are never rendered as these items.
+
+The `developer` role is an initial projection choice, not a claim that it is behaviorally neutral. A later harness experiment must compare it with a hidden `user`-role item explicitly labelled as a non-conversational Listener action. The comparison should measure correct use of the action, unwanted acknowledgements, tool choices, and any model/provider-specific instruction bias. Both projections share the same durable Station event and feed record.
+
+```json
+{
+  "event_id": "evt_01...",
+  "station_id": "default",
+  "sequence": 118,
+  "kind": "playback.skipped",
+  "origin": "human",
+  "occurred_at": "2026-07-25T20:15:00Z",
+  "payload": {"queue_item_id": "qi_01...", "position_seconds": 8}
+}
+```
+
+Important event families:
+
+```text
+listener.command.*       queue.*
+playback.*               provider.*
+profile.*                instruction.*
+task.*                   research.*
+scheduler.*              dj.response.*
+```
+
+The event carries `origin` (`listener`, `dj`, `player`, or `scheduler`) and a correlation/run ID where applicable. By default, the UI exposes a broad, legible Station activity stream: meaningful Listener controls, DJ programming outcomes, profile/task changes, provider/recovery outcomes, and transient status lines. It never exposes raw tool calls, arguments, results, hidden session items, or chain-of-thought. A later UI preference may hide categories without changing storage or agent context. Meaningful Listener controls are durable, quiet activity cards rather than chat bubbles; cosmetic controls are omitted. A Listener message creates both a genuine conversation turn and a related feed entry. A meaningful direct control creates a command, event, and Internal Station-event item; a cosmetic direct control creates only the necessary state change/event.
+
+### Listener profile
+
+The durable profile is intentionally plain language. A first version can look like this, whether stored as Markdown or simple JSON:
+
+```text
+Instructions
+- During work hours, keep talking sparse and avoid explicit lyrics.
+
+Working taste notes
+- Recently enjoying dream pop and warm electronic music.
+- Usually skips long live recordings unless specifically requested.
+
+Recent signals
+- Queued an album by ...
+```
+
+Instructions are intentional policy, not weak recommendation signals. Taste notes are neither permanent facts nor a numerical model: the Listener can inspect, edit, or remove them, and the DJ treats them as helpful context rather than absolute rules.
+
+## Agent tool surface
+
+The public tool interface should be small and semantic:
+
+```text
+get_playback_state()
+get_recent_events(limit)
+get_queue()
+read_listener_profile()
+update_listener_profile(content, reason)
+search_music(query, limit)
+inspect_candidates(candidate_ids)
+queue_music(candidate_id, reason, based_on_queue_revision)
+queue_commentary(text, reason, based_on_queue_revision, for_music_item_id?)
+play_now(candidate_id, reason)
+remove_from_queue(queue_item_id)
+pause() / resume() / skip()
+favorite_current_track()
+web_search(query, limit)
+schedule_station_task(instruction, run_at_or_recurrence)
+list_station_tasks()
+update_station_task(task_id, instruction_or_recurrence)
+cancel_station_task(task_id)
+```
+
+`get_queue()` returns the Queue revision, playback state and current item, plus ordered upcoming Program items with their type, origin (`listener` or `dj`), and any anchor relationship. It deliberately omits provider URLs and raw event history. `queue_music` and `queue_commentary` require that revision, reject stale or immediately duplicate work, and say in their tool descriptions that the DJ must inspect the Queue before programming it. `queue_commentary` accepts an optional `for_music_item_id`: omitted creates a general transition only when Music follows, while a supplied upcoming Music-item ID creates Anchored Commentary that moves or is removed with that item. A stale command returns structured `stale_queue_revision` data; the DJ may refresh and make one new append-only attempt only if Queue health remains below target, otherwise the job is superseded. The DJ can call `get_queue()` and `search_music()` in parallel before deciding what to queue. `play_now` is available only during an active Listener interaction that explicitly requests immediate playback; autonomous runs queue rather than interrupt.
+
+The agent should not receive raw yt-dlp arguments, temporary URLs, database access, or a generic shell tool.
+
+The final DJ output during an active Listener interaction is the Direct response and does not enter the Queue. `queue_music` and `queue_commentary` create ordered Program items. The DJ writes text; the Listener's UI-controlled Voice mode decides whether it is also rendered as speech. A voice-rendered direct response may briefly duck and resume music only for an active Listener interaction; autonomous DJ work must create a Commentary item instead. A background run's final output is internal status, not Listener-facing content.
+
+Prompt guidance should cover behavior such as taste, tone, queue planning, and when to speak. The following remain harness rules because they require deterministic correctness:
+
+- candidate-ID-only queueing
+- provider and playback validation
+- command authorization and revision checks
+- human-over-agent precedence
+- idempotency and queue invariants
+- profile and Station-task scope
+- bounded-run and output-channel boundaries
+- secrets and temporary URL isolation
+
+## State model
+
+### Station state
+
+```text
+idle -> resolving -> buffering -> playing <-> paused
+                          |             |
+                          v             v
+                       recovering <--- ended
+                          |
+                          v
+                        failed
+```
+
+`thinking` and `speaking` are overlay activity states. The station can be playing music while the agent thinks, and music may duck while the DJ speaks.
+
+### Queue item state
+
+```text
+candidate -> queued -> resolving -> ready -> current -> played
+                         |                     |
+                         v                     v
+                      unavailable            failed
+```
+
+The current item is not considered playable until the provider has resolved it close to playback time.
+
+### DJ job state
+
+```text
+pending -> running -> completed
+                  |       |
+                  v       v
+              retryable  superseded
+```
+
+A human command can supersede an agent job if its plan was based on an old station revision. This is optimistic concurrency control: the DJ plans without holding a Station lock, then submits a revision-checked conditional command.
+
+## Autonomy and session model
+
+Moodio uses one persistent Agents SDK session per Station for conversational continuity, but every agent invocation is bounded. The session is a small file-backed implementation of the Agents SDK session interface, wrapped in `OpenAIResponsesCompactionSession`.
+
+Compaction uses a configured inexpensive model and triggers only above a generous history threshold. This keeps the one-DJ conversation coherent across scheduled work without making normal short runs pay a compaction cost. The job runner serializes Station runs so two jobs cannot concurrently append to or compact the same session; a Listener message takes priority and background work is deferred or coalesced before it starts.
+
+Compaction summarizes conversation history; it does not replace durable Station state. The Listener profile, Station tasks, Queue, and event history remain the durable application context. Each run receives only the compact profile and a tiny run header automatically; it reads live operational detail through scoped tools.
+
+Natural-language Listener input is appended as a `user` conversation item. A direct control remains a typed controller command; after a meaningful control succeeds, the controller queues a compact Internal Station-event item for the Station session with a `developer` role and flushes it at the next safe boundary. A player report, scheduler tick, or due Station task remains a typed trigger. The role is an intentionally replaceable projection seam: an experiment may instead append a `user`-role item that clearly says it is a non-conversational Listener action.
+
+At the start of every run, the dynamic system instructions contain only:
+
+1. stable DJ policy and persona
+2. active Listener instructions and concise Taste notes
+3. a tiny run header: mode, trigger, response policy, and Station revision
+
+The DJ pulls live operational detail with focused tools. `get_queue()` is the normal precondition for queued programming; it records the DJ's actual Queue observation in session history. Other scoped tools serve playback, events, tasks, or profile detail when needed. This avoids repeatedly stuffing a live Station snapshot into every model call while retaining a useful chronological series of internal event and tool observations.
+
+For example, a Listener pause is immediately applied and recorded in the feed; its Internal Station-event item is written to the Station session at the next safe turn boundary, without producing a DJ response. A later DJ run can see the pause in history or inspect fresh state. A Listener message such as “make it warmer” is a real conversation turn and may result in queue commands and feed events. This keeps direct controls deterministic and prevents the session from becoming the system of record.
+
+This makes the station robust across process restarts and prevents old chat history from becoming the only source of truth.
+
+## Personalization lifecycle
+
+### Capture
+
+Automatically record high-signal actions:
+
+- direct search and explicit queue
+- favorite and unfavorite
+- replay
+- completed listen
+- early skip, including position
+- pause/resume and time-of-day context
+- direct statements about taste
+
+### Infer
+
+The DJ may summarize meaningful recent activity into a candidate taste note during any relevant bounded run when it can state a short, plain-language reason. It should weigh explicit actions more heavily than passive behavior, but a single favorite, removal, or other isolated action is evidence rather than an automatic durable conclusion. Keep notes short and explainable. A low-frequency taste-reflection task is useful for revisiting longer patterns, but is not the only time a profile may change.
+
+### Apply
+
+The context builder supplies the compact Listener profile to the DJ. The DJ treats taste notes as helpful context, not as absolute rules, unless the profile contains an explicit instruction.
+
+An explicit Listener instruction is written immediately when the Listener expresses it. The UI shows every profile revision as inspectable activity, but does not require advance approval or make the DJ announce the update.
+
+### Correct
+
+The Listener can inspect, remove, or override a taste note. “Never play this artist” becomes an instruction; “I have been enjoying this lately” remains a revisable taste note.
+
+## Real-world awareness
+
+Release awareness is a bounded research capability, not open-ended browsing.
+
+Initial policy:
+
+- research only artists with clear Listener-profile interest, meaningful favorites/listening activity, or a current user request
+- run no more often than a scheduled cadence
+- record what source and time produced the observation
+- treat a release as ordinary DJ programming: append a playable candidate only when it fits the Listener and current Queue, never interrupt or notify merely because it is new; otherwise keep a quiet observation or do nothing
+- show a release activity card only when research changes the Queue or Listener profile; no-op research remains internal
+- resolve any resulting music through the normal provider path
+
+The DJ may record a simple profile note or Station task when an artist merits recurring attention; v0.2 has no separate followed-artist model. This avoids turning the station into a news bot while still letting it feel current.
+
+## Persistence
+
+v0.2 uses an intentionally small app-owned file store, not SQLite. There is one `StationStorage` module; callers do not write these files directly:
+
+```text
+station.json          current playback, Queue, revision, and small operational state
+listener-profile.md   editable instructions, taste notes, and recent signals
+station-tasks.json    active DJ-managed Station tasks
+agent-session.json    compacted conversation, tool, and Internal Station-event items
+station-feed.jsonl    append-only durable Station feed
+```
+
+JSON snapshots are written to a temporary sibling and atomically replaced. Feed events are appended as one JSON object per line with a monotonic sequence; startup recovers a valid prefix if the final write was interrupted. This is sufficient for one local Station, low write volume, and no concurrent writers. SQLite remains a future migration option if those constraints stop holding.
+
+The Listener profile is a small, editable working document, not a derived database model that must be perfectly rebuilt. The Station feed is the UI/activity history; the session is only compacted agent memory.
+
+## Delivery surfaces
+
+### Browser console
+
+The browser is a station console, not a generic chat UI. It displays:
+
+- now playing and provider status
+- queue and direct transport controls
+- a concise DJ feed and transcript
+- quiet Listener-activity cards for meaningful direct controls
+- broad, human-readable DJ/provider/recovery activity, with raw tool activity kept internal
+- why a track was chosen when requested
+- visible agent activity without exposing chain-of-thought
+- editable listener profile
+- a quiet profile-change item that opens the latest revision or diff
+
+### HTTP and SSE surface
+
+Suggested public local endpoints:
+
+```text
+GET  /api/station
+GET  /api/events?after=<sequence>
+POST /api/commands
+GET  /api/playback/{queue_item_id}
+POST /api/events/playback
+GET  /api/listener-profile
+PUT  /api/listener-profile
+GET  /api/feed?after=<sequence>
+GET  /api/stream              # Server-Sent Events
+```
+
+Commands and paginated history use ordinary HTTP. One server-to-client SSE stream carries live, domain-shaped Station-feed updates, playback state, and bounded run progress. On reconnect, the UI reloads persisted feed entries after its last sequence. Polling is only a recovery fallback.
+
+### Why not ChatKit
+
+ChatKit is a capable chat/thread surface, but Moodio's primary object is a Station, not a chat thread. Its player must remain independently controllable, direct controls must not be blocked behind a streamed model response, and autonomous Station activity must exist even without a Listener message. Using ChatKit would still leave us owning the controller, Station feed, persistence, and scheduler while adapting them into a second thread/item model. v0.2 therefore keeps a custom station UI and borrows only the useful patterns: durable finished items, transient progress, typed actions, and SSE.
+
+## Failure handling
+
+- If a candidate cannot resolve, mark it unavailable, emit a provider event, and choose another candidate.
+- If yt-dlp fails transiently, retry within a bounded policy; do not hold the queue hostage.
+- If every provider candidate fails, keep the station state honest and ask the DJ for a recovery move rather than pretending playback started.
+- If the agent fails or times out, direct player controls remain usable and a deterministic queue-health job can retry later.
+- If a provider requires unsupported authentication, surface that as configuration state, never as an opaque browser failure.
+
+## Migration sequence
+
+1. **Provider spike:** add `YouTubeProvider`, candidate search, resolve, stream proxy, and a real browser playback test. Keep SoundCloud behind a legacy flag.
+2. **Shared controller:** route UI and agent mutations through commands, revisions, and persisted events.
+3. **Program queue:** allow the shared Queue to hold music and commentary, while keeping direct responses outside it.
+4. **Autonomous jobs:** replace provider-specific cadence loops with deduplicated queue-health/recovery work, one active-hour editorial pulse, and DJ-managed Station tasks.
+5. **Listener profile:** persist an editable profile and the small amount of activity needed to keep its taste notes useful.
+6. **Research:** add artist-release awareness only after profile and provider paths are reliable.
+
+## Explicit non-goals for this phase
+
+- downloading or building a private music archive
+- reproducing a streaming provider's catalog API
+- multi-user social radio
+- fully autonomous open-web behavior
+- self-modifying agent prompts or tools without evaluations and review
+- multi-agent choreography before one DJ agent and its tools are demonstrably insufficient

@@ -139,7 +139,7 @@ def test_cli_embed_resolves_soundcloud_url_and_updates_runtime(tmp_path) -> None
 
 
 def test_cli_command_runs_runtime_command_path(tmp_path) -> None:
-    async def fake_station_turn(_: dict, control: StationControl) -> str:
+    async def fake_station_turn(_: dict | str, control: StationControl, session) -> str:
         await control.set_talk_density("low")
         return "Keeping it warm."
 
@@ -198,16 +198,36 @@ def test_cli_module_entrypoint_runs_command() -> None:
     assert json.loads(result.stdout)["host_name"] == "moodio"
 
 
-def test_package_exposes_moodie_console_script() -> None:
+def test_package_exposes_moodio_console_script() -> None:
     with open("pyproject.toml", "rb") as pyproject_file:
         pyproject = tomllib.load(pyproject_file)
 
-    assert pyproject["project"]["scripts"]["moodie"] == "moodio.cli:main"
+    assert pyproject["project"]["scripts"]["moodio"] == "moodio.cli:main"
+    assert "moodie" not in pyproject["project"]["scripts"]
 
 
-def test_cli_help_uses_moodie_program_name(capsys) -> None:
+def test_cli_help_uses_moodio_program_name(capsys) -> None:
     with pytest.raises(SystemExit) as exc_info:
         run(["--help"])
 
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out.startswith("usage: moodie ")
+    assert capsys.readouterr().out.startswith("usage: moodio ")
+
+
+
+def test_cli_preferences_import_persists_listener_preferences(tmp_path) -> None:
+    runtime = _runtime(tmp_path)
+    profile = tmp_path / "apple-music.txt"
+    profile.write_text("Phoebe Bridgers\nJapanese Breakfast\nRainy Day")
+    stdout = io.StringIO()
+
+    exit_code = run(
+        ["preferences", "import", str(profile), "--source", "apple_music"],
+        runtime_factory=lambda: runtime,
+        stdout=stdout,
+    )
+
+    assert exit_code == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["source"] == "apple_music"
+    assert runtime.state_store.get_listener_preferences() is not None

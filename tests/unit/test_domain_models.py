@@ -22,7 +22,7 @@ def test_station_state_keeps_queue_warm() -> None:
 
     assert state.status == "playing"
     assert len(state.queue) >= 1
-    assert state.queue[0].track_id == "apple:track:rainy-focus-02"
+    assert state.queue[0].track_id == "apple:track:soft-sunset-02"
 
 
 def test_transcript_segment_requires_male_default_voice_in_fixture() -> None:

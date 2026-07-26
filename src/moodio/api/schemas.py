@@ -20,6 +20,27 @@ class FavoriteRequest(BaseModel):
     track_id: str = Field(min_length=1)
 
 
+class QueueSoundCloudEmbedRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class PreferenceImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["apple_music", "text"]
+    profile_text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class PreferenceImportResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    seed_queries: list[str]
+    raw_text: str
+
+
 class NowResponse(StationState):
     pass
 

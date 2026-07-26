@@ -2,11 +2,11 @@
 
 ## Product Definition
 
-Build a personal AI radio / voice DJ product that feels like a live station, not a chatbot with a play button.
+Build a personal, long-running AI radio / voice DJ product that feels like a live station, not a chatbot with a play button or a static playlist generator.
 
 Canonical one-line framing:
 
-A personal radio station shaped by your taste, live context, and an AI DJ, with a lightweight, elegant interface.
+A personal radio station that grows to understand your taste, follows relevant live context, and keeps programming music through an AI DJ.
 
 The core experience is:
 
@@ -15,6 +15,9 @@ The core experience is:
 - short spoken interstitials between tracks or segments
 - lightweight listener steering through short commands
 - a live interface that shows what is happening now
+- durable learning from explicit instructions and observed listening behavior
+- autonomous but bounded station upkeep when the queue, clock, or real-world music context calls for it
+- DJ-managed scheduled follow-ups that remain visible and bounded
 
 Product defaults:
 
@@ -35,6 +38,9 @@ Implementation note:
 - Live state matters: users should always understand whether the station is thinking, speaking, or playing.
 - Context should shape programming: time, mood, weather, and recent history should influence what happens next.
 - Controls should stay light: quick nudges are preferred over complex manual programming.
+- Human control wins: direct listener actions must take effect immediately and be visible to the DJ.
+- The model chooses; the runtime guarantees: the agent provides editorial judgment while typed controls protect queue and playback correctness.
+- Music stays provider-backed: Moodio may cache metadata and taste signals, never download or retain tracks.
 
 ## Target User
 
@@ -56,6 +62,8 @@ This user wants:
 4. See what is playing and what the host is saying right now.
 5. Understand why a track or segment was chosen.
 6. Trust that the station remembers durable taste without overfitting to one turn.
+7. Ask the station to follow an explicit instruction or working taste note and later inspect, edit, or forget it.
+8. Occasionally hear about a relevant new release without having to monitor every favorite artist manually.
 
 ## Core Modes
 
@@ -114,11 +122,21 @@ Inputs include:
 The system must:
 
 - search tracks
+- let the Listener search provider candidates and directly choose **Play now** or **Queue next** for an exact selection; both validate availability before committing, while Play now records the prior track as skipped only on success and repeated Queue next choices preserve click order ahead of DJ-programmed music
+- present direct search as one fuzzy music-search field with Song, Artist, Album, Video, and Playlist result pills
+- let Artist, Album, and Playlist results open further provider results rather than queueing them as tracks, with fuzzy-search fallback when richer provider expansion is slow or unreliable
+- treat genre, mood, and activity as query formulation and candidate-ranking work, not as promised provider filters
 - select tracks
+- let the DJ use immediate play only for an explicit Listener request during an active interaction; autonomous programming queues rather than interrupts
 - resolve playable sources
 - manage queue state
 - expose transport controls
+- represent the upcoming station program as ordered music and commentary items
+- support an immediate direct response outside that program
 - keep at least 1-2 upcoming tracks prepared when possible, rather than waiting until the current track fully ends
+- use provider-backed playback without downloading or retaining track audio
+- reject unavailable candidates before presenting them as playing
+- validate the experimental provider against representative song, artist, album, genre, and mood searches before relying on it for the Station
 
 ### Spoken interstitials
 
@@ -127,6 +145,9 @@ The system must:
 - generate spoken lines between tracks or segments
 - render them through TTS
 - expose transcript text live in the UI
+- let the Listener enable or disable voice rendering of DJ text
+- allow a voice response to an active listener request to briefly duck and resume music
+- keep autonomous commentary in the upcoming program rather than interrupting music
 - associate speech with station state and timing
 - keep typical between-track speech under 20 seconds
 - allow speech density to be tuned up or down
@@ -148,7 +169,7 @@ The system must support lightweight commands from the UI:
 
 - free-text short prompt
 - skip
-- previous
+- previous: restart the current track after roughly five seconds, otherwise re-resolve and replay the prior completed track; never silently substitute on provider failure
 - pause
 - resume
 - favorite
@@ -164,6 +185,8 @@ The MVP button-driven actions are:
 - play/pause
 - next track
 - previous track
+- reorder upcoming Music items; anchored commentary follows its target
+- remove any upcoming Music item; anchored commentary is removed with its target
 - favorite / unfavorite
 - expand / collapse widget
 - volume
@@ -182,14 +205,22 @@ The system should incorporate:
 - recent plays
 - recent user nudges
 - routine rules
+- explicit listener instructions
+- relevant real-world music context, such as a new release by a followed artist
 
 ### Memory
 
 The system must distinguish between:
 
-- durable taste and preference memory
+- an editable, plain-language listener profile containing instructions and revisable taste notes
 - short-lived conversational context
 - recent operational history such as queue and plays
+
+The listener profile may be Markdown or simple JSON. It must remain easy to inspect, edit, reset, and extend; the system does not need a complex preference schema, confidence model, or taste graph. Explicit listener instructions outrank taste notes.
+
+Automatic profile revisions retain a one-sentence reason in revision/event metadata so the UI can show it beside a diff without cluttering the editable profile.
+
+DJ profile updates apply automatically. The interface may show a quiet activity item and must let the Listener open the current profile or a revision diff; it does not require approval or an interruptive alert.
 
 ## User Experience Requirements
 
@@ -248,9 +279,11 @@ The MVP is successful if:
 
 - multi-user support
 - social features
-- autonomous web browsing
+- unbounded autonomous web browsing
 - complex subagent choreography
 - open-ended long-form conversation as the main surface
+- downloading, retaining, or redistributing music tracks
+- self-modifying prompts or tools without evaluation and review
 
 ## Product Risks
 
@@ -266,4 +299,4 @@ These do not block architecture, but they should be decided before heavy UI work
 
 - whether the collapsed widget is always-on-top by default
 - whether favorites should affect future recommendations immediately or only after persistence
-- whether "talk less / talk more" should be a temporary command, a preference, or both
+- whether "talk less / talk more" should be a temporary command, a taste note, or both

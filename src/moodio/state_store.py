@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import sqlite3
 from pathlib import Path
 
@@ -25,6 +26,13 @@ class TranscriptRecord:
 
 
 @dataclass(slots=True, frozen=True)
+class ListenerPreferences:
+    source: str
+    raw_text: str
+    seed_queries: list[str]
+
+
+@dataclass(slots=True, frozen=True)
 class StateContext:
     commands: list[CommandRecord]
     plays: list[PlayRecord]
@@ -36,6 +44,10 @@ class StateStore:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+
+    @property
+    def db_path(self) -> Path:
+        return self._db_path
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._db_path)
@@ -60,6 +72,12 @@ class StateStore:
                   start_ms integer not null,
                   duration_ms integer not null
                 );
+                create table if not exists listener_preferences (
+                  id integer primary key check (id = 1),
+                  source text not null,
+                  raw_text text not null,
+                  seed_queries_json text not null
+                );
                 """
             )
 
@@ -77,6 +95,33 @@ class StateStore:
                 "insert into transcript_segments(segment_id, text, start_ms, duration_ms) values (?, ?, ?, ?)",
                 (segment_id, text, start_ms, duration_ms),
             )
+
+    def save_listener_preferences(self, preferences: ListenerPreferences) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                insert into listener_preferences(id, source, raw_text, seed_queries_json)
+                values (1, ?, ?, ?)
+                on conflict(id) do update set
+                  source = excluded.source,
+                  raw_text = excluded.raw_text,
+                  seed_queries_json = excluded.seed_queries_json
+                """,
+                (preferences.source, preferences.raw_text, json.dumps(preferences.seed_queries, sort_keys=True)),
+            )
+
+    def get_listener_preferences(self) -> ListenerPreferences | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "select source, raw_text, seed_queries_json from listener_preferences where id = 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return ListenerPreferences(
+            source=row[0],
+            raw_text=row[1],
+            seed_queries=list(json.loads(row[2])),
+        )
 
     def recent_context(self, limit: int) -> StateContext:
         if limit < 0:

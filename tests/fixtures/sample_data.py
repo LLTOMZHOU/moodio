@@ -15,13 +15,13 @@ def sample_track() -> dict:
 
 def sample_next_track() -> dict:
     return {
-        "track_id": "apple:track:rainy-focus-02",
-        "title": "Rainy Focus",
+        "track_id": "apple:track:soft-sunset-02",
+        "title": "Soft Sunset",
         "artist": "Example Artist",
-        "album": "Desk Hours",
+        "album": "Golden Hour",
         "duration_seconds": 212,
         "playback_ref": "apple_music:catalog:67890",
-        "artwork_url": "https://example.test/artwork/rainy-focus.jpg",
+        "artwork_url": "https://example.test/artwork/soft-sunset.jpg",
     }
 
 
@@ -67,7 +67,7 @@ def sample_radio_continue_action() -> dict:
         },
         "queue_tracks": [
             {
-                "track_id": "apple:track:rainy-focus-02",
+                "track_id": "apple:track:soft-sunset-02",
                 "reason": "Keeps the station one track ahead with a calm tone.",
                 "start_policy": "after_tts",
             }

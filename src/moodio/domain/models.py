@@ -30,6 +30,7 @@ class QueueItem(BaseModel):
     duration_seconds: int = Field(gt=0)
     playback_ref: str = Field(min_length=1)
     artwork_url: str = Field(min_length=1)
+    external_url: str | None = None
 
 
 class NowPlaying(QueueItem):
