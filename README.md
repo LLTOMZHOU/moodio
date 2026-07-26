@@ -162,10 +162,26 @@ uv run moodio tail --filter agent --json
 
 # Act on that same station.
 uv run moodio command "play something warmer"
+uv run moodio search "Of Monsters and Men"
+uv run moodio queue youtube:video:<id> --revision <queue-revision>
+uv run moodio play-now youtube:video:<id>
+uv run moodio play
+uv run moodio pause
+uv run moodio next
+uv run moodio previous
+uv run moodio favorite  # current track by default
+uv run moodio voice on
+uv run moodio playback near_end  # simulate the browser player lifecycle
 uv run moodio transcribe ./command.wav
+
+# Read or clear the same durable conversation the browser renders.
+uv run moodio conversation --limit 50
+uv run moodio clear-conversation --yes
 ```
 
 `trace` shows finalized persisted Agents SDK conversation items: Listener messages, assistant messages, tool calls, and tool outputs. It intentionally excludes streaming text deltas and does not contain timing metadata. `latency` reads durable Station timing spans for completed Listener turns. `session` is an alias for `trace`; `tail --json` remains the live, full-fidelity event view.
+
+The browser remains responsible for rendering and seeking its audio element. All server-backed Listener controls are available through the CLI, alongside the CLI-only inspection tools.
 
 ## Docs
 

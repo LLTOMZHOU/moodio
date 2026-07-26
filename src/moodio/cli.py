@@ -66,6 +66,15 @@ async def _run_async(
         _print_json(await _server_request(args, "GET", "/api/debug/inspect"), stdout)
     elif args.command_name == "feed":
         _print_json(await _server_request(args, "GET", "/api/feed", params={"limit": args.limit}), stdout)
+    elif args.command_name == "conversation":
+        params = {"limit": args.limit}
+        if args.before is not None:
+            params["before"] = args.before
+        _print_json(await _server_request(args, "GET", "/api/conversation", params=params), stdout)
+    elif args.command_name == "clear_conversation":
+        if not args.yes:
+            raise ValueError("refusing to clear conversation history without --yes")
+        _print_json(await _server_request(args, "DELETE", "/api/conversation"), stdout)
     elif args.command_name == "trace":
         _print_json(await _server_request(args, "GET", "/api/debug/trace", params={"limit": args.limit}), stdout)
     elif args.command_name == "session":
@@ -97,18 +106,60 @@ async def _run_async(
         _print_json(await _server_request(args, "POST", "/api/next"), stdout)
     elif args.command_name == "previous":
         _print_json(await _server_request(args, "POST", "/api/previous"), stdout)
+    elif args.command_name == "play":
+        _print_json(await _server_request(args, "POST", "/api/play"), stdout)
+    elif args.command_name == "pause":
+        _print_json(await _server_request(args, "POST", "/api/pause"), stdout)
     elif args.command_name == "favorite":
-        _print_json(await _server_request(args, "POST", "/api/favorite", json={"track_id": args.track_id}), stdout)
+        track_id = args.track_id
+        if track_id is None:
+            station = await _server_request(args, "GET", "/api/now")
+            track_id = station["now_playing"]["track_id"]
+        _print_json(await _server_request(args, "POST", "/api/favorite", json={"track_id": track_id}), stdout)
+    elif args.command_name == "voice":
+        _print_json(await _server_request(
+            args,
+            "POST",
+            "/api/voice-mode",
+            json={"enabled": args.enabled == "on"},
+        ), stdout)
     elif args.command_name == "queue":
-        provider_name, provider_track_id = _parse_track_ref(args.track_ref)
-        if provider_name != "youtube":
-            raise ValueError(f"unsupported provider: {provider_name}")
         _print_json(await _server_request(
             args,
             "POST",
             "/api/music/queue-next",
-            json={"candidate_id": provider_track_id, "reason": "CLI queue next"},
+            json={
+                "candidate_id": args.track_ref,
+                "reason": args.reason,
+                "expected_revision": args.revision,
+            },
             timeout=60,
+        ), stdout)
+    elif args.command_name == "play_now":
+        _print_json(await _server_request(
+            args,
+            "POST",
+            "/api/music/play-now",
+            json={"candidate_id": args.track_ref, "reason": args.reason},
+            timeout=60,
+        ), stdout)
+    elif args.command_name == "playback":
+        station = await _server_request(args, "GET", "/api/now")
+        current_track = station["now_playing"]
+        duration_seconds = args.duration_seconds or current_track["duration_seconds"]
+        position_seconds = args.position_seconds
+        if position_seconds is None:
+            position_seconds = duration_seconds if args.event == "ended" else max(0, duration_seconds - 1)
+        _print_json(await _server_request(
+            args,
+            "POST",
+            "/api/events/playback",
+            json={
+                "event_type": f"music.playback.{args.event}",
+                "track_id": args.track_id or current_track["track_id"],
+                "position_seconds": position_seconds,
+                "duration_seconds": duration_seconds,
+            },
         ), stdout)
     elif args.command_name == "preferences_import":
         response = await _server_request(
@@ -339,13 +390,6 @@ def _summarize_payload(event_name: str, payload: dict) -> str:
     return json.dumps(payload, sort_keys=True) if payload else ""
 
 
-def _parse_track_ref(track_ref: str) -> tuple[str, str]:
-    parts = track_ref.split(":")
-    if len(parts) != 3 or parts[1] not in {"track", "video"} or not parts[0] or not parts[2]:
-        raise ValueError("track ref must look like '<provider>:video:<id>'")
-    return parts[0], parts[2]
-
-
 def _print_json(payload: Any, stdout: TextIO) -> None:
     stdout.write(json.dumps(payload, indent=2, sort_keys=True))
     stdout.write("\n")
@@ -380,6 +424,14 @@ def _parser() -> argparse.ArgumentParser:
     feed = subcommands.add_parser("feed", help="Read the persisted listener-facing station history")
     _add_server_options(feed)
     feed.add_argument("--limit", default=100, type=int)
+    conversation = subcommands.add_parser("conversation", help="Read persisted Listener and Moodio conversation history")
+    _add_server_options(conversation)
+    conversation.add_argument("--limit", default=50, type=int)
+    conversation.add_argument("--before", type=int, help="Read the page ending before this conversation offset")
+    clear_conversation = subcommands.add_parser("clear-conversation", help="Clear conversation and SDK session, preserving profile and Station state")
+    _add_server_options(clear_conversation)
+    clear_conversation.add_argument("--yes", action="store_true", help="Confirm the destructive history clear")
+    clear_conversation.set_defaults(command_name="clear_conversation")
     trace = subcommands.add_parser("trace", help="Read finalized persisted Agents SDK conversation items")
     _add_server_options(trace)
     trace.add_argument("--limit", default=100, type=int)
@@ -393,6 +445,10 @@ def _parser() -> argparse.ArgumentParser:
     _add_server_options(next_command)
     previous = subcommands.add_parser("previous", help="Return to previous track on the running server")
     _add_server_options(previous)
+    play = subcommands.add_parser("play", help="Resume Station playback")
+    _add_server_options(play)
+    pause = subcommands.add_parser("pause", help="Pause Station playback")
+    _add_server_options(pause)
 
     command = subcommands.add_parser("command", help="Send a natural-language station command")
     _add_server_options(command)
@@ -407,13 +463,31 @@ def _parser() -> argparse.ArgumentParser:
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=10)
 
-    queue = subcommands.add_parser("queue", help="Queue a YouTube provider track ref on the running station")
+    queue = subcommands.add_parser("queue", help="Queue a search-result playback ref next, like the browser UI")
     _add_server_options(queue)
     queue.add_argument("track_ref")
+    queue.add_argument("--reason", default="CLI queue next")
+    queue.add_argument("--revision", type=int, help="Optional Queue revision observed before queueing")
 
-    favorite = subcommands.add_parser("favorite", help="Favorite a track id")
+    play_now = subcommands.add_parser("play-now", help="Resolve and start a search-result playback ref immediately")
+    _add_server_options(play_now)
+    play_now.add_argument("track_ref")
+    play_now.add_argument("--reason", default="CLI play now")
+
+    favorite = subcommands.add_parser("favorite", help="Favorite the current track, or an explicit track id")
     _add_server_options(favorite)
-    favorite.add_argument("track_id")
+    favorite.add_argument("track_id", nargs="?")
+
+    voice = subcommands.add_parser("voice", help="Enable or disable spoken Moodio responses")
+    _add_server_options(voice)
+    voice.add_argument("enabled", choices=["on", "off"])
+
+    playback = subcommands.add_parser("playback", help="Report a browser-style playback lifecycle event for debugging")
+    _add_server_options(playback)
+    playback.add_argument("event", choices=["near_end", "ended"])
+    playback.add_argument("--track-id")
+    playback.add_argument("--position-seconds", type=int)
+    playback.add_argument("--duration-seconds", type=int)
 
     preferences = subcommands.add_parser("preferences", help="Manage listener taste inputs")
     _add_server_options(preferences)
