@@ -73,7 +73,12 @@ function renderPlaybackProgress() {
   const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null;
   progress.disabled = !duration;
   progress.max = String(Math.round(duration || 1000));
-  progress.value = String(Math.min(Math.round(audio.currentTime || 0), Number(progress.max)));
+  const position = Math.min(Math.round(audio.currentTime || 0), Number(progress.max));
+  progress.value = String(position);
+  const railWidth = progress.clientWidth || 0;
+  const ratio = duration ? position / Number(progress.max) : 0;
+  const fillWidth = 8 + Math.max(0, railWidth - 16) * ratio;
+  progress.style.setProperty("--playback-fill", `${fillWidth}px`);
   byId("playback-elapsed").textContent = formatTime(audio.currentTime || 0);
   byId("playback-duration").textContent = formatTime(duration);
 }
@@ -84,7 +89,6 @@ function renderState(payload) {
   state.now = payload;
   state.currentTrackId = payload.now_playing.track_id;
 
-  byId("status-line").textContent = `${payload.mode} / ${payload.talk_density}`;
   byId("station-status").textContent = payload.status;
   byId("voice-mode").checked = Boolean(payload.voice_mode);
   byId("track-title").textContent = payload.now_playing.title;
@@ -388,10 +392,15 @@ byId("apple-music-import-form").addEventListener("submit", async (event) => {
     const queued = result.queue?.total_queued || 0;
     setMessage(`Imported ${result.import.track_count} tracks and queued ${queued} opening picks.`);
     event.target.reset();
+    byId("apple-music-import-name").textContent = "No file selected";
     await refreshState();
   } catch (error) {
     setMessage(error.message);
   }
+});
+
+byId("apple-music-import-file").addEventListener("change", (event) => {
+  byId("apple-music-import-name").textContent = event.target.files?.[0]?.name || "No file selected";
 });
 
 const musicAudio = byId("music-audio");
@@ -406,6 +415,7 @@ byId("playback-progress").addEventListener("input", (event) => {
     renderPlaybackProgress();
   }
 });
+window.addEventListener("resize", renderPlaybackProgress);
 musicAudio.addEventListener("ended", async () => {
   if (!state.now?.now_playing) return;
   await postJson("/api/events/playback", {

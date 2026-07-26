@@ -17,11 +17,6 @@
             <p class="eyebrow">private station</p>
             <h1>moodio</h1>
           </div>
-          <div class="signal-stack" aria-label="station signal status">
-            <span class="on-air-light"></span>
-            <span class="signal-label">on air</span>
-            <span id="status-line">connecting...</span>
-          </div>
         </header>
 
         <div class="radio-body">
@@ -67,8 +62,9 @@
             <audio id="tts-audio" controls hidden></audio>
             <p id="tts-hint" class="hint" hidden></p>
 
-            <a id="music-open-link" class="soundcloud-open-link" href="#" target="_blank" rel="noreferrer" hidden>
-              Open source ↗
+            <a id="music-open-link" class="source-button" href="#" target="_blank" rel="noreferrer" hidden>
+              <span>Open source</span>
+              <span aria-hidden="true">↗</span>
             </a>
 
             <div class="button-row">
@@ -77,15 +73,22 @@
               <button data-action="pause">Pause</button>
               <button data-action="next">Next</button>
               <button id="favorite-button">Fav</button>
-              <label><input id="voice-mode" type="checkbox" /> Voice</label>
             </div>
+            <label class="voice-toggle">
+              <input id="voice-mode" type="checkbox" />
+              <span class="voice-toggle-track" aria-hidden="true"><span></span></span>
+              <span>Voice responses</span>
+            </label>
           </article>
 
           <aside class="control-stack">
             <article class="control-card">
               <p class="eyebrow">bring your taste</p>
               <form id="apple-music-import-form" class="import-form">
-                <label class="file-picker" for="apple-music-import-file">Apple Music XML</label>
+                <label class="file-picker" for="apple-music-import-file">
+                  <span class="file-picker-label">Choose Apple Music XML</span>
+                  <span id="apple-music-import-name" class="file-picker-name">No file selected</span>
+                </label>
                 <input id="apple-music-import-file" type="file" accept=".xml,application/xml,text/xml" required />
                 <button type="submit">Import</button>
               </form>
