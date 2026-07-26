@@ -134,13 +134,12 @@ The first adapter to evaluate is the experimental `YouTubeProvider`. SoundCloud 
 
 ### Experimental YouTube provider adapter
 
-`YouTubeProvider` uses a pinned yt-dlp binary as a short-lived resolver. For Music discovery it constructs a YouTube Music search URL, normalizes its provider-supported sections—songs, albums, artists, videos, and playlists—and tags each result with its kind.
+`YouTubeProvider` uses a pinned yt-dlp binary as a short-lived resolver. Its first implementation uses regular YouTube `ytsearch` rather than claiming a stable YouTube Music API; it normalizes playable video metadata as track candidates. Richer Music-specific result kinds remain an adapter improvement, not a v0.2 requirement.
 
 ```text
 search(query)
-  -> https://music.youtube.com/search?q=<query>
-  -> yt-dlp --no-config --no-cache-dir --simulate --flat-playlist --dump-json
-  -> mixed, normalized search results
+  -> yt-dlp ytsearch<N>:<query> --simulate --flat-playlist
+  -> normalized playable track candidates
 
 resolve_track(video_id)
   -> refresh canonical metadata and availability

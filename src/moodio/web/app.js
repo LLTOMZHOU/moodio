@@ -1,9 +1,7 @@
 const state = {
   now: null,
   currentTrackId: null,
-  soundCloudWidget: null,
   renderedPlaybackRef: null,
-  soundCloudReady: false,
   chatMessages: [],
   isSpeaking: false,
   musicVolume: 1,
@@ -15,20 +13,9 @@ function setMessage(text) {
   byId("message").textContent = text;
 }
 
-function soundCloudUrlFromPlaybackRef(playbackRef) {
-  const prefix = "soundcloud:embed:";
-  if (!playbackRef || !playbackRef.startsWith(prefix)) return null;
-  return playbackRef.slice(prefix.length);
-}
-
-function soundCloudPublicUrl(track) {
-  return track?.external_url || soundCloudUrlFromPlaybackRef(track?.playback_ref);
-}
-
-// --- Audio fade for music when DJ speaks ---
-
 function fadeMusicOut(duration = 800) {
-  if (!state.soundCloudWidget || !state.soundCloudReady) return;
+  const audio = byId("music-audio");
+  if (!audio || !audio.src) return;
   state.isSpeaking = true;
   const steps = 20;
   const stepTime = duration / steps;
@@ -36,20 +23,21 @@ function fadeMusicOut(duration = 800) {
   const fade = setInterval(() => {
     step++;
     const vol = Math.max(0, 1 - step / steps);
-    try { state.soundCloudWidget.setVolume(vol * 100); } catch {}
+    audio.volume = vol * state.musicVolume;
     if (step >= steps) clearInterval(fade);
   }, stepTime);
 }
 
 function fadeMusicIn(duration = 800) {
-  if (!state.soundCloudWidget || !state.soundCloudReady) return;
+  const audio = byId("music-audio");
+  if (!audio || !audio.src) return;
   const steps = 20;
   const stepTime = duration / steps;
   let step = 0;
   const fade = setInterval(() => {
     step++;
     const vol = Math.min(1, step / steps);
-    try { state.soundCloudWidget.setVolume(vol * 100); } catch {}
+    audio.volume = vol * state.musicVolume;
     if (step >= steps) {
       clearInterval(fade);
       state.isSpeaking = false;
@@ -57,65 +45,19 @@ function fadeMusicIn(duration = 800) {
   }, stepTime);
 }
 
-// --- SoundCloud embed (hidden visually, functional for audio) ---
-
 function renderEmbed(track) {
-  const slot = byId("embed-slot");
-  const openSoundCloudTrack = byId("soundcloud-open-link");
-  const soundCloudUrl = soundCloudUrlFromPlaybackRef(track?.playback_ref);
-  if (!soundCloudUrl) {
-    state.soundCloudWidget = null;
-    state.renderedPlaybackRef = null;
-    state.soundCloudReady = false;
-    if (openSoundCloudTrack) {
-      openSoundCloudTrack.hidden = true;
-      openSoundCloudTrack.href = "#";
-    }
-    slot.innerHTML = "";
-    return;
+  const audio = byId("music-audio");
+  const openSource = byId("music-open-link");
+  if (!track?.playback_ref?.startsWith("youtube:video:")) return;
+  if (openSource) {
+    openSource.hidden = !track.external_url;
+    openSource.href = track.external_url || "#";
   }
-  if (openSoundCloudTrack) {
-    openSoundCloudTrack.hidden = false;
-    openSoundCloudTrack.href = soundCloudPublicUrl(track);
-  }
-  if (state.renderedPlaybackRef === track.playback_ref && state.soundCloudWidget) {
-    return;
-  }
-
-  const playerUrl = new URL("https://w.soundcloud.com/player/");
-  playerUrl.searchParams.set("url", soundCloudUrl);
-  playerUrl.searchParams.set("auto_play", "true");
-  playerUrl.searchParams.set("hide_related", "true");
-  playerUrl.searchParams.set("show_comments", "false");
-  playerUrl.searchParams.set("show_user", "false");
-  playerUrl.searchParams.set("show_reposts", "false");
-  playerUrl.searchParams.set("visual", "false");
-  playerUrl.searchParams.set("color", "2d2d2d");
-  playerUrl.searchParams.set("buying", "false");
-  playerUrl.searchParams.set("download", "false");
-  playerUrl.searchParams.set("sharing", "false");
-  playerUrl.searchParams.set("show_artwork", "false");
-  playerUrl.searchParams.set("show_playcount", "false");
-  playerUrl.searchParams.set("like", "false");
-
-  slot.innerHTML = "";
-  state.soundCloudWidget = null;
+  if (state.renderedPlaybackRef === track.playback_ref) return;
   state.renderedPlaybackRef = track.playback_ref;
-  state.soundCloudReady = false;
-  const iframe = document.createElement("iframe");
-  iframe.title = `SoundCloud player for ${track.title}`;
-  iframe.allow = "autoplay";
-  iframe.src = playerUrl.toString();
-  slot.appendChild(iframe);
-  if (window.SC?.Widget) {
-    state.soundCloudWidget = window.SC.Widget(iframe);
-    state.soundCloudWidget.bind(SC.Widget.Events.READY, () => {
-      state.soundCloudReady = true;
-    });
-    state.soundCloudWidget.bind(SC.Widget.Events.PLAY, () => setMessage("♪ playing"));
-    state.soundCloudWidget.bind(SC.Widget.Events.PAUSE, () => setMessage("paused"));
-    state.soundCloudWidget.bind(SC.Widget.Events.ERROR, () => setMessage("SoundCloud player error"));
-  }
+  audio.src = `/api/music/stream/${encodeURIComponent(track.playback_ref)}`;
+  audio.load();
+  audio.play().then(() => setMessage("♪ playing")).catch(() => setMessage("Press Play to begin audio"));
 }
 
 // --- Station state rendering ---
@@ -155,7 +97,7 @@ function renderQueueItem(track, index) {
 
   const badge = document.createElement("span");
   badge.className = "queue-badge";
-  badge.textContent = soundCloudUrlFromPlaybackRef(track.playback_ref) ? "SC" : "demo";
+  badge.textContent = track.playback_ref?.startsWith("youtube:") ? "YT" : "demo";
 
   item.append(title, meta, badge);
   return item;
@@ -223,12 +165,11 @@ function showTtsFailure(payload) {
   setMessage("TTS failed");
 }
 
-// --- WebSocket event stream ---
+// --- Server-sent live station events ---
 
 function connectEvents() {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(`${protocol}//${window.location.host}/api/stream`);
-  socket.addEventListener("message", (event) => {
+  const events = new EventSource("/api/events");
+  const handleMessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.event === "station.state.updated") renderState(message.payload);
     if (message.event === "tts.segment.started") {
@@ -241,8 +182,11 @@ function connectEvents() {
       showTtsFailure(message.payload);
     }
     if (message.event === "queue.updated") refreshState();
+  };
+  ["station.state.updated", "tts.segment.started", "tts.audio.ready", "tts.audio.failed", "queue.updated"].forEach((name) => {
+    events.addEventListener(name, handleMessage);
   });
-  socket.addEventListener("close", () => setMessage("event stream disconnected"));
+  events.addEventListener("error", () => setMessage("reconnecting live updates…"));
 }
 
 // --- API helpers ---
@@ -274,13 +218,15 @@ async function postJson(url, payload) {
 }
 
 async function postAction(action) {
-  if (action === "play" && state.soundCloudWidget) {
-    playSoundCloud();
+  const audio = byId("music-audio");
+  if (action === "play" && audio?.src) {
+    await audio.play();
+    setMessage("♪ playing");
     return;
   }
-  if (action === "pause" && state.soundCloudWidget) {
-    state.soundCloudWidget.pause();
-    setMessage("Pausing...");
+  if (action === "pause" && audio?.src) {
+    audio.pause();
+    setMessage("paused");
     return;
   }
   const payload = await postJson(`/api/${action}`, {});
@@ -289,17 +235,34 @@ async function postAction(action) {
   return payload;
 }
 
-function playSoundCloud() {
-  if (!state.soundCloudWidget) {
-    setMessage("No SoundCloud player loaded");
-    return;
+function renderMusicSearch(results) {
+  const list = byId("music-search-results");
+  list.innerHTML = "";
+  for (const track of results) {
+    const item = document.createElement("li");
+    const title = document.createElement("span");
+    title.className = "queue-title";
+    title.textContent = track.title;
+    const meta = document.createElement("span");
+    meta.className = "queue-meta";
+    meta.textContent = `${track.artist} · ${Math.round(track.duration_seconds / 60)} min`;
+    const queue = document.createElement("button");
+    queue.textContent = "Next";
+    queue.addEventListener("click", async () => {
+      await postJson("/api/music/queue-next", { candidate_id: track.playback_ref });
+      setMessage(`Queued ${track.title}`);
+      await refreshState();
+    });
+    const play = document.createElement("button");
+    play.textContent = "Play";
+    play.addEventListener("click", async () => {
+      await postJson("/api/music/play-now", { candidate_id: track.playback_ref });
+      setMessage(`Starting ${track.title}`);
+      await refreshState();
+    });
+    item.append(title, meta, queue, play);
+    list.appendChild(item);
   }
-  if (!state.soundCloudReady) {
-    setMessage("SoundCloud still loading...");
-    return;
-  }
-  state.soundCloudWidget.play();
-  setMessage("Playing from SoundCloud...");
 }
 
 // --- Event listeners ---
@@ -332,5 +295,29 @@ byId("command-form").addEventListener("submit", async (event) => {
     await refreshState();
   } catch (error) { setMessage(error.message); }
 });
+
+byId("music-search-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = byId("music-search-input");
+  const query = input.value.trim();
+  if (!query) return;
+  try {
+    const result = await postJson("/api/music/search", { query, limit: 10 });
+    renderMusicSearch(result.results);
+  } catch (error) { setMessage(error.message); }
+});
+
+const musicAudio = byId("music-audio");
+musicAudio.addEventListener("ended", async () => {
+  if (!state.now?.now_playing) return;
+  await postJson("/api/events/playback", {
+    event_type: "music.playback.ended",
+    track_id: state.now.now_playing.track_id,
+    position_seconds: Math.round(musicAudio.duration || 0),
+    duration_seconds: Math.round(musicAudio.duration || 1),
+  });
+  await postAction("next");
+});
+musicAudio.addEventListener("error", () => setMessage("Audio stream unavailable"));
 
 refreshState().then(connectEvents).catch((error) => setMessage(error.message));

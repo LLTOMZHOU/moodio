@@ -30,12 +30,15 @@ from moodio.info import (
     WeatherProvider,
     WebSearchProvider,
 )
+from moodio.music.providers import MusicProvider, ProviderTrack
 from moodio.music.soundcloud import SoundCloudProvider
+from moodio.music.youtube import YouTubeProvider
 from moodio.router import route_trigger
 from agents.memory import Session
 
 from moodio.runtime.control import StationControl
-from moodio.runtime.session import SqliteSession
+from moodio.runtime.journal import StationJournal
+from moodio.runtime.session import JsonlSession
 from moodio.state_store import ListenerPreferences, StateStore
 from moodio.station_agent import run_station_turn
 from moodio.voice import (
@@ -121,7 +124,9 @@ class RuntimeService:
         web_search_provider: WebSearchProvider | None = None,
         weather_provider: WeatherProvider | None = None,
         soundcloud_provider: object | None = None,
+        music_provider: MusicProvider | None = None,
         tts_cache_dir: Path | str = "var/cache/tts",
+        station_dir: Path | str | None = None,
     ) -> None:
         self._temp_dir: TemporaryDirectory[str] | None = None
         if state_store is None:
@@ -129,6 +134,8 @@ class RuntimeService:
             state_store = StateStore(Path(self._temp_dir.name) / "moodio.db")
 
         self.state_store = state_store
+        self.station_dir = Path(station_dir) if station_dir else self.state_store.db_path.parent / "station"
+        self.journal = StationJournal(self.station_dir)
         self._station_turn_runner = station_turn_runner or run_station_turn
         self._runtime_event_executor = runtime_event_executor or execute_action
         self.speech_synthesizer = speech_synthesizer
@@ -136,6 +143,11 @@ class RuntimeService:
         self.web_search_provider = web_search_provider or NoopWebSearchProvider()
         self.weather_provider = weather_provider or StaticWeatherProvider()
         self.soundcloud_provider = soundcloud_provider or SoundCloudProvider()
+        # An explicitly injected SoundCloud provider keeps old test/dev setups working;
+        # normal construction and the environment factory use YouTube.
+        self._legacy_soundcloud_refill = music_provider is None and soundcloud_provider is not None
+        self.music_provider = music_provider or YouTubeProvider()
+        self._candidates: dict[str, ProviderTrack] = {}
         self.tts_cache_dir = Path(tts_cache_dir)
         self.station_state = StationState.model_validate(
             {
@@ -148,16 +160,24 @@ class RuntimeService:
                 "favorites_enabled": True,
             }
         )
+        persisted_snapshot = self.journal.load_snapshot()
+        if persisted_snapshot is not None:
+            try:
+                self.station_state = StationState.model_validate(persisted_snapshot)
+            except Exception:
+                self.journal.append("station.snapshot.invalid", {"reason": "validation_failed"})
         self.transcript_segments = [_seed_transcript()]
         self.favorites: set[str] = set()
         self._previous_tracks: list[QueueItem] = []
-        self._session: Session = SqliteSession(self.state_store.db_path, session_id="default")
+        self._listener_priority_count = 0
+        self._session: Session = JsonlSession(self.station_dir / "agent-session.jsonl")
         self._subscribers: list[asyncio.Queue[dict]] = []
         self._trace_id: str = ""
         self._span_counter: int = 0
         self._weather_task: asyncio.Task | None = None
         self._queue_refill_task: asyncio.Task | None = None
         self._seed_store()
+        self.journal.save_snapshot(self.station_state.model_dump(mode="json"))
 
     async def start(self) -> None:
         """Run the startup turn and begin the weather cadence.
@@ -249,13 +269,16 @@ class RuntimeService:
         seed_queries = _seed_queries_from_profile_text(profile_text)
         preferences = ListenerPreferences(source=source, raw_text=profile_text.strip(), seed_queries=seed_queries)
         self.state_store.save_listener_preferences(preferences)
+        (self.station_dir / "listener-profile.md").write_text(profile_text.strip() + "\n", encoding="utf-8")
         return preferences
 
     async def ensure_queue_seeded(self, *, reason: str) -> dict:
+        if self._legacy_soundcloud_refill:
+            return await self._ensure_legacy_soundcloud_queue_seeded(reason=reason)
         preferences = self.state_store.get_listener_preferences()
         if preferences is None or not preferences.seed_queries:
             await self.broadcast("provider.request", {
-                "provider": "soundcloud_discovery",
+                "provider": self.music_provider.key,
                 "action": "queue_refill.skipped",
                 "reason": "no_preferences",
                 "trigger": reason,
@@ -265,7 +288,7 @@ class RuntimeService:
         needed = max(0, _DEFAULT_QUEUE_TARGET - len(self.station_state.queue))
         if needed <= 0:
             await self.broadcast("provider.request", {
-                "provider": "soundcloud_discovery",
+                "provider": self.music_provider.key,
                 "action": "queue_refill.skipped",
                 "reason": "queue_full",
                 "trigger": reason,
@@ -276,7 +299,7 @@ class RuntimeService:
         queries = self._candidate_queries(preferences, needed)
         if not queries:
             await self.broadcast("provider.request", {
-                "provider": "soundcloud_discovery",
+                "provider": self.music_provider.key,
                 "action": "queue_refill.skipped",
                 "reason": "no_candidate_queries",
                 "trigger": reason,
@@ -284,20 +307,46 @@ class RuntimeService:
             return {"queued": [], "failed": [], "total_queued": 0}
 
         await self.broadcast("provider.request", {
-            "provider": "soundcloud_discovery",
+            "provider": self.music_provider.key,
             "action": "queue_refill.started",
             "trigger": reason,
             "needed": needed,
             "query_count": len(queries),
         })
-        result = await StationControl(self).find_and_queue_soundcloud_multiple(queries)
+        result = await StationControl(self).find_and_queue_music_multiple(queries)
+        await self.broadcast("provider.request", {
+            "provider": self.music_provider.key,
+            "action": "queue_refill.completed",
+            "trigger": reason,
+            "queued_count": result["total_queued"],
+            "failed": result["failed"],
+            "queue_size": len(self.station_state.queue),
+        })
+        return result
+
+    async def _ensure_legacy_soundcloud_queue_seeded(self, *, reason: str) -> dict:
+        """Compatibility path for explicit legacy SoundCloud injection only."""
+        preferences = self.state_store.get_listener_preferences()
+        if preferences is None or not preferences.seed_queries:
+            return {"queued": [], "failed": [], "total_queued": 0}
+        needed = max(0, _DEFAULT_QUEUE_TARGET - len(self.station_state.queue))
+        if needed <= 0:
+            return {"queued": [], "failed": [], "total_queued": 0}
+        await self.broadcast("provider.request", {
+            "provider": "soundcloud_discovery",
+            "action": "queue_refill.started",
+            "trigger": reason,
+            "needed": needed,
+        })
+        result = await StationControl(self).find_and_queue_soundcloud_multiple(
+            self._candidate_queries(preferences, needed)
+        )
         await self.broadcast("provider.request", {
             "provider": "soundcloud_discovery",
             "action": "queue_refill.completed",
             "trigger": reason,
             "queued_count": result["total_queued"],
             "failed": result["failed"],
-            "queue_size": len(self.station_state.queue),
         })
         return result
 
@@ -349,6 +398,9 @@ class RuntimeService:
         return f"{self._trace_id}-{self._span_counter:04d}"
 
     async def broadcast(self, event: str, payload: dict) -> None:
+        self.journal.append(event, payload)
+        if event in {"station.state.updated", "queue.updated"}:
+            self.journal.save_snapshot(self.station_state.model_dump(mode="json"))
         envelope = {
             "event": event,
             "payload": payload,
@@ -492,6 +544,8 @@ class RuntimeService:
         if self.station_state.queue:
             self._previous_tracks.append(self.station_state.now_playing)
             next_track = self.station_state.queue.pop(0)
+            if self._listener_priority_count:
+                self._listener_priority_count -= 1
             self.station_state.now_playing = next_track
             self.state_store.record_play(track_id=next_track.track_id, title=next_track.title)
 
@@ -506,8 +560,14 @@ class RuntimeService:
             "queue": [track.model_dump() for track in self.station_state.queue],
         }
 
-    async def queue_track(self, track: QueueItem) -> dict:
-        self.station_state.queue.insert(0, track)
+    async def queue_track(self, track: QueueItem, *, listener_priority: bool = False) -> dict:
+        if listener_priority:
+            # Consecutive “Queue next” clicks remain in click order directly
+            # after the current item, ahead of autonomous DJ programming.
+            self.station_state.queue.insert(self._listener_priority_count, track)
+            self._listener_priority_count += 1
+        else:
+            self.station_state.queue.insert(0, track)
         self._record_play_if_new(track)
 
         queue_payload = {"queue": [item.model_dump() for item in self.station_state.queue]}
@@ -518,6 +578,17 @@ class RuntimeService:
             "accepted": True,
             "queue": queue_payload["queue"],
         }
+
+    def remember_candidates(self, tracks: list[ProviderTrack]) -> None:
+        for track in tracks:
+            self._candidates[track.playback_ref] = track
+
+    async def resolve_candidate(self, candidate_id: str) -> ProviderTrack:
+        candidate = self._candidates.get(candidate_id)
+        raw_id = candidate.provider_track_id if candidate else candidate_id
+        resolved = await self.music_provider.resolve_track(raw_id)
+        self._candidates[resolved.playback_ref] = resolved
+        return resolved
 
     async def queue_soundcloud_embed(self, url: str) -> dict:
         provider_track = await self.soundcloud_provider.resolve_embed_url(url)
@@ -600,6 +671,7 @@ def build_runtime_from_env() -> RuntimeService:
     runtime_kwargs = {
         "web_search_provider": DuckDuckGoSearchProvider(),
         "weather_provider": FetchWeatherProvider(),
+        "music_provider": YouTubeProvider(),
     }
     if elevenlabs_api_key and elevenlabs_voice_id:
         return RuntimeService(

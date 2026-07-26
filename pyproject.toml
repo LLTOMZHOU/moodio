@@ -5,19 +5,11 @@ description = "Personal radio station shaped by taste, live context, and an AI D
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
+  "httpx>=0.28",
   "openai-agents>=0.14.0",
   "pydantic>=2.10",
+  "yt-dlp>=2026.7.0",
 ]
 
 [project.scripts]
 moodio = "moodio.cli:main"
-
-[project.optional-dependencies]
-dev = [
-  "httpx>=0.28",
-  "pytest>=8.3",
-]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src", "."]

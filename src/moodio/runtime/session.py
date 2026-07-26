@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import uuid
 from pathlib import Path
@@ -44,6 +45,80 @@ class InMemoryListSession(SessionABC):
 
     async def clear_session(self) -> None:
         self._items.clear()
+
+
+class JsonlSession(SessionABC):
+    """One append-only, file-backed station session."""
+
+    def __init__(self, path: Path | str, *, session_id: str = "station") -> None:
+        self._path = Path(path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._session_id = session_id
+        self._items: list[TResponseInputItem] | None = None
+        self.session_settings: SessionSettings | None = None
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    @session_id.setter
+    def session_id(self, value: str) -> None:
+        self._session_id = value
+
+    def _load(self) -> list[TResponseInputItem]:
+        if not self._path.exists():
+            return []
+        items: list[TResponseInputItem] = []
+        for raw_line in self._path.read_text(encoding="utf-8").splitlines():
+            try:
+                envelope = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            if envelope.get("session_id") == self._session_id and isinstance(envelope.get("item"), dict):
+                items.append(envelope["item"])
+        return items
+
+    def _ensure_items(self) -> list[TResponseInputItem]:
+        if self._items is None:
+            self._items = self._load()
+        return self._items
+
+    async def get_items(self, limit: int | None = None) -> list[TResponseInputItem]:
+        items = self._ensure_items()
+        return list(items if limit is None else items[-limit:])
+
+    async def add_items(self, items: list[TResponseInputItem]) -> None:
+        if not items:
+            return
+        with self._path.open("a", encoding="utf-8") as handle:
+            for item in items:
+                handle.write(json.dumps({"session_id": self._session_id, "item": item}, sort_keys=True))
+                handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        self._ensure_items().extend(items)
+
+    async def pop_item(self) -> TResponseInputItem | None:
+        items = self._ensure_items()
+        if not items:
+            return None
+        item = items.pop()
+        self._rewrite(items)
+        return item
+
+    async def clear_session(self) -> None:
+        self._items = []
+        self._rewrite([])
+
+    def _rewrite(self, items: list[TResponseInputItem]) -> None:
+        temporary_path = self._path.with_suffix(".tmp")
+        with temporary_path.open("w", encoding="utf-8") as handle:
+            for item in items:
+                handle.write(json.dumps({"session_id": self._session_id, "item": item}, sort_keys=True))
+                handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_path.replace(self._path)
 
 
 class SqliteSession(SessionABC):

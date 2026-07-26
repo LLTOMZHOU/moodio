@@ -27,6 +27,7 @@ async def _default_fetch_json(url: str, *, params: dict[str, object], headers: d
 
 
 class SoundCloudProvider:
+    key = "soundcloud"
     def __init__(
         self,
         *,

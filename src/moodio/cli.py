@@ -14,15 +14,12 @@ import uvicorn
 
 from moodio.api.schemas import CommandRequest, FavoriteRequest
 from moodio.music.providers import MusicProvider
-from moodio.music.soundcloud import SoundCloudProvider
+from moodio.music.youtube import YouTubeProvider
 from moodio.runtime.service import RuntimeService, build_runtime_from_env
 
 
 def default_music_provider() -> MusicProvider:
-    return SoundCloudProvider(
-        client_id=os.environ.get("SOUNDCLOUD_CLIENT_ID"),
-        oauth_token=os.environ.get("SOUNDCLOUD_OAUTH_TOKEN"),
-    )
+    return YouTubeProvider()
 
 
 def run(
@@ -95,14 +92,10 @@ async def _run_async(
         _print_json(response.model_dump(), stdout)
     elif args.command_name == "queue":
         provider_name, provider_track_id = _parse_track_ref(args.track_ref)
-        if provider_name != "soundcloud":
+        if provider_name != "youtube":
             raise ValueError(f"unsupported provider: {provider_name}")
         provider = provider_factory()
         provider_track = await provider.resolve_track(provider_track_id)
-        _print_json(await runtime.queue_track(provider_track.to_queue_item()), stdout)
-    elif args.command_name == "embed":
-        provider = provider_factory()
-        provider_track = await provider.resolve_embed_url(args.soundcloud_url)
         _print_json(await runtime.queue_track(provider_track.to_queue_item()), stdout)
     elif args.command_name == "preferences_import":
         preferences = runtime.import_listener_preferences(
@@ -280,8 +273,8 @@ def _summarize_payload(event_name: str, payload: dict) -> str:
 
 def _parse_track_ref(track_ref: str) -> tuple[str, str]:
     parts = track_ref.split(":")
-    if len(parts) != 3 or parts[1] != "track" or not parts[0] or not parts[2]:
-        raise ValueError("track ref must look like '<provider>:track:<id>'")
+    if len(parts) != 3 or parts[1] not in {"track", "video"} or not parts[0] or not parts[2]:
+        raise ValueError("track ref must look like '<provider>:video:<id>'")
     return parts[0], parts[2]
 
 
@@ -328,9 +321,6 @@ def _parser() -> argparse.ArgumentParser:
 
     queue = subcommands.add_parser("queue", help="Queue a provider track ref as the next track")
     queue.add_argument("track_ref")
-
-    embed = subcommands.add_parser("embed", help="Queue a SoundCloud URL through the embeddable player path")
-    embed.add_argument("soundcloud_url")
 
     favorite = subcommands.add_parser("favorite", help="Favorite a track id")
     favorite.add_argument("track_id")

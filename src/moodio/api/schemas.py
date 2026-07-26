@@ -26,6 +26,21 @@ class QueueSoundCloudEmbedRequest(BaseModel):
     url: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
+class MusicSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    limit: int = Field(default=10, ge=1, le=25)
+    preferences: dict[str, Any] = Field(default_factory=dict)
+
+
+class CandidateActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] = "Listener selection"
+
+
 class PreferenceImportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

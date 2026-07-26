@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
+
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from starlette.exceptions import HTTPException
 
 from moodio.api.schemas import (
     CommandRequest,
+    CandidateActionRequest,
     FavoriteRequest,
     PlaybackEventRequest,
+    MusicSearchRequest,
     PreferenceImportRequest,
     QueueSoundCloudEmbedRequest,
 )
@@ -58,6 +64,11 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
         runtime: RuntimeService = app.state.runtime
         return runtime.transcript_snapshot()
 
+    @app.get("/api/feed")
+    async def get_feed(limit: int = 100) -> dict:
+        runtime: RuntimeService = app.state.runtime
+        return {"items": runtime.journal.recent(min(max(limit, 1), 500))}
+
     @app.post("/api/command", status_code=202)
     async def post_command(request: CommandRequest) -> dict:
         runtime: RuntimeService = app.state.runtime
@@ -92,6 +103,45 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
     async def post_soundcloud_embed(request: QueueSoundCloudEmbedRequest) -> dict:
         runtime: RuntimeService = app.state.runtime
         return await runtime.queue_soundcloud_embed(request.url)
+
+    @app.post("/api/music/search")
+    async def post_music_search(request: MusicSearchRequest) -> dict:
+        return await runtime_control(runtime).search_music(request.query, request.limit, request.preferences)
+
+    @app.post("/api/music/queue-next")
+    async def post_music_queue_next(request: CandidateActionRequest) -> dict:
+        return await runtime_control(runtime).queue_music(
+            request.candidate_id,
+            request.reason,
+            listener_priority=True,
+        )
+
+    @app.post("/api/music/play-now")
+    async def post_music_play_now(request: CandidateActionRequest) -> dict:
+        return await runtime_control(runtime).play_now(request.candidate_id, request.reason)
+
+    @app.get("/api/music/stream/{track_ref:path}")
+    async def get_music_stream(track_ref: str, request: Request) -> StreamingResponse:
+        """Proxy a short-lived provider stream without disclosing its URL to the browser."""
+        track = await runtime.resolve_candidate(track_ref)
+        if not track.stream_url:
+            raise HTTPException(status_code=503, detail="track is not currently streamable")
+        upstream_headers = dict(track.stream_headers)
+        if request.headers.get("range"):
+            upstream_headers["Range"] = request.headers["range"]
+
+        async def stream_body():
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                async with client.stream("GET", track.stream_url, headers=upstream_headers) as upstream:
+                    upstream.raise_for_status()
+                    async for chunk in upstream.aiter_bytes(64 * 1024):
+                        yield chunk
+
+        return StreamingResponse(
+            stream_body(),
+            media_type="audio/mpeg",
+            headers={"Accept-Ranges": "bytes"},
+        )
 
     @app.post("/api/preferences/import")
     async def post_preferences_import(request: PreferenceImportRequest) -> dict:
@@ -140,7 +190,34 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
         except WebSocketDisconnect:
             runtime.unsubscribe(queue)
 
+    @app.get("/api/events")
+    async def stream_events(request: Request) -> StreamingResponse:
+        runtime: RuntimeService = app.state.runtime
+        queue = await runtime.subscribe()
+
+        async def event_body():
+            try:
+                initial = {"event": "station.state.updated", "payload": runtime.snapshot().model_dump()}
+                yield f"event: {initial['event']}\ndata: {json.dumps(initial)}\n\n"
+                while not await request.is_disconnected():
+                    try:
+                        message = await asyncio.wait_for(queue.get(), timeout=15)
+                    except TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    yield f"event: {message['event']}\ndata: {json.dumps(message)}\n\n"
+            finally:
+                runtime.unsubscribe(queue)
+
+        return StreamingResponse(event_body(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
     return app
+
+
+def runtime_control(runtime: RuntimeService):
+    from moodio.runtime.control import StationControl
+
+    return StationControl(runtime)
 
 
 def _audio_media_type(path: Path) -> str:

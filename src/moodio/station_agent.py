@@ -27,9 +27,9 @@ _DEFAULT_AGENT_TIMEOUT_SECONDS = 45.0
 _SYSTEM_PROMPT = """\
 You are moodio, the on-air host of a personal radio station. You are not a chatbot — you are a DJ with a warm, editorial voice who keeps the station alive between tracks.
 
-You have NO internal knowledge of what music is available. The ONLY way to find and play music is through your tools. You cannot recommend or reference specific tracks, artists, or albums unless you have found them through a tool call. When the user wants music, you MUST call find_and_play_soundcloud or find_and_queue_soundcloud_multiple. There is no other way.
+You have NO internal knowledge of what music is available. The ONLY way to find and play music is through `search_music`, followed by `queue_music` or `play_now`. You cannot recommend or reference specific tracks, artists, or albums unless you have found them through a tool call.
 
-Default stance: unless the listener is clearly asking a pure meta, implementation, or transport-control question, start from music discovery. If the listener is vague, make a best-guess SoundCloud search first, then explain the choice and optionally ask a short follow-up.
+Default stance: unless the listener is clearly asking a pure meta, implementation, or transport-control question, start from music discovery. If the listener is vague, make a best-guess music search first, then explain the choice and optionally ask a short follow-up.
 
 ## Personality
 
@@ -43,25 +43,25 @@ Default stance: unless the listener is clearly asking a pure meta, implementatio
 
 You MUST call tools in these situations — do NOT just talk about doing them:
 
-1. **User asks for music** → call find_and_play_soundcloud or find_and_queue_soundcloud_multiple. No exceptions. Do not describe what you would play — actually search for it.
-2. **User mentions a mood, vibe, activity, weather, or time** → call get_weather if relevant, then call find_and_play_soundcloud with a query shaped by that context.
-3. **Queue is empty or thin** → call find_and_queue_soundcloud_multiple with 2-3 complementary queries to refill it.
+1. **User asks for music** → call search_music, inspect the results, then call play_now or queue_music. No exceptions. Do not describe what you would play — actually search for it.
+2. **User mentions a mood, vibe, activity, weather, or time** → call get_weather if relevant, then search for a query shaped by that context.
+3. **Queue is empty or thin** → search and queue 2-3 complementary tracks to refill it.
 4. **Open-ended conversation without a precise ask** → still do a music search. Pick a reasonable direction from context, queue it, and explain the choice.
 5. **User asks about current info** (new releases, what's trending, artist news) → call web_search, then use what you find.
 5. **Starting a new session or turn with no recent activity** → call get_station_state and get_weather, then act on what you learn.
 
 ## Finding and playing music
 
-- **find_and_play_soundcloud**: Your primary tool. Call it whenever the user wants ANY kind of music — a genre, mood, artist, activity, era, or even a vague feeling. It searches the web for a matching SoundCloud track, queues it, and starts playback.
-- **find_and_queue_soundcloud_multiple**: For batch requests. Call this when the user wants multiple tracks ("build me a rainy day queue", "find a few chill songs", "give me three tracks for studying"). Pass 2-5 focused queries like ["rainy day acoustic", "melancholic folk", "soft piano ambient"].
-- **queue_soundcloud_embed**: Only when the user shares a direct SoundCloud URL.
+- **search_music**: Your discovery tool for artists, songs, genres, moods, activities, and eras. Its default results favor track-length music; use an explicit duration cap only when the listener asks for one. Recency is best-effort.
+- **queue_music**: Queue an inspected result. Use it for autonomous programming and for Listener requests that are not explicitly immediate.
+- **play_now**: Resolve and start an inspected result immediately. Use it only when the Listener explicitly asks to play something now.
 - If a search fails, try a different query. Don't give up after one attempt — rephrase, broaden, or shift the angle.
 
 ## When to use web_search
 
 - When the user asks about anything current: new releases, trending music, artist news, festival lineups, "what's good right now".
-- Proactively, to research before music searches: "best shoegaze albums 2026" → web_search first → then use findings to shape find_and_play_soundcloud queries.
-- When you need inspiration: search for "best [genre] songs for [mood/activity]" then use the results to pick good SoundCloud queries.
+- Proactively, to research before music searches: "best shoegaze albums 2026" → web_search first → then use findings to shape a music query.
+- When you need inspiration: search for "best [genre] songs for [mood/activity]" then use the results to shape a music query.
 
 ## Weather and context
 
@@ -117,6 +117,11 @@ def build_station_tools(control: StationControl) -> list:
         return await control.get_station_state()
 
     @function_tool
+    async def get_playback_state() -> dict:
+        """Check current playback and queue depth without receiving raw provider URLs or history."""
+        return await control.get_playback_state()
+
+    @function_tool
     async def get_queue() -> dict:
         """Check the upcoming queue. Use this to see if the queue is running thin and needs refilling,
         or to tell the listener what's coming up next."""
@@ -136,11 +141,21 @@ def build_station_tools(control: StationControl) -> list:
         return await control.get_recent_context(limit=limit)
 
     @function_tool
+    async def read_listener_profile() -> dict:
+        """Read the Listener's editable instructions and concise taste notes."""
+        return await control.read_listener_profile()
+
+    @function_tool
+    async def update_listener_profile(content: str, reason: str) -> dict:
+        """Revise concise durable Listener preferences. Explain the reason but do not write a conversation transcript."""
+        return await control.update_listener_profile(content, reason)
+
+    @function_tool
     async def web_search(query: str, limit: int = 5) -> dict:
         """Search the live web for current, external information that can improve your next music move.
         Use this when the listener asks about new releases, trending music, artist news, scenes, or any
-        question that needs up-to-date context outside the SoundCloud catalog. Also use it proactively to
-        research genres, scenes, and recommendation angles before shaping one or more SoundCloud searches."""
+        question that needs up-to-date context outside the music catalog. Also use it proactively to
+        research genres, scenes, and recommendation angles before shaping one or more music searches."""
         return await control.web_search(query, limit=limit)
 
     @function_tool
@@ -152,27 +167,31 @@ def build_station_tools(control: StationControl) -> list:
         return await control.get_weather(location)
 
     @function_tool
-    async def queue_soundcloud_embed(url: str) -> dict:
-        """Queue a specific SoundCloud track by its URL. Use this when the listener shares a direct
-        SoundCloud link. For music discovery by description or mood, use find_and_play_soundcloud instead."""
-        return await control.queue_soundcloud_embed(url)
+    async def search_music(
+        query: str,
+        limit: int = 10,
+        max_duration_seconds: int | None = None,
+        prefer_released_after: str | None = None,
+    ) -> dict:
+        """Search the music provider and return queueable candidates. Default ranking favors ordinary track lengths;
+        pass max_duration_seconds only for an explicit hard limit. Release recency is best-effort."""
+        preferences = {"max_duration_seconds": max_duration_seconds, "prefer_released_after": prefer_released_after}
+        return await control.search_music(query, limit=limit, preferences={key: value for key, value in preferences.items() if value is not None})
 
     @function_tool
-    async def find_and_play_soundcloud(query: str) -> dict:
-        """Find a single SoundCloud track matching a description and make it play now.
-        The query is used to search the web for a matching SoundCloud track, which is then queued and started.
-        Use this for specific requests like 'play Bon Iver', 'something acoustic for a rainy morning',
-        or 'chill beats to study to'. For batch requests (multiple tracks), use find_and_queue_soundcloud_multiple."""
-        return await control.find_and_play_soundcloud(query)
+    async def inspect_candidates(candidate_ids: list[str]) -> dict:
+        """Inspect candidates returned by search_music before queueing them. This never resolves temporary stream URLs."""
+        return await control.inspect_candidates(candidate_ids)
 
     @function_tool
-    async def find_and_queue_soundcloud_multiple(queries: list[str]) -> dict:
-        """Find and queue multiple SoundCloud tracks at once. Each query is searched independently and
-        all results are added to the queue. Use this when the listener wants a batch of music —
-        'build me a rainy day queue', 'find a few songs about heartbreak', 'give me three chill tracks',
-        or any request that implies more than one track. Each query should be a focused search term
-        like 'acoustic rain songs', 'dream pop shoegaze', or 'lo-fi beats evening'."""
-        return await control.find_and_queue_soundcloud_multiple(queries)
+    async def queue_music(candidate_id: str, reason: str) -> dict:
+        """Queue a previously searched candidate. Inspect candidates and get_queue before programming the station."""
+        return await control.queue_music(candidate_id, reason)
+
+    @function_tool
+    async def play_now(candidate_id: str, reason: str) -> dict:
+        """Resolve and play a previously searched candidate immediately. Use only for an explicit Listener request."""
+        return await control.play_now(candidate_id, reason)
 
     @function_tool
     async def next_track() -> dict:
@@ -213,14 +232,18 @@ def build_station_tools(control: StationControl) -> list:
 
     return [
         get_station_state,
+        get_playback_state,
         get_queue,
         get_transcript,
         get_recent_context,
+        read_listener_profile,
+        update_listener_profile,
         web_search,
         get_weather,
-        queue_soundcloud_embed,
-        find_and_play_soundcloud,
-        find_and_queue_soundcloud_multiple,
+        search_music,
+        inspect_candidates,
+        queue_music,
+        play_now,
         next_track,
         previous_track,
         play,

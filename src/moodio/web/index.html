@@ -58,13 +58,12 @@
               <div class="vu-meter"><span></span><span></span><span></span><span></span><span></span></div>
             </div>
 
-            <!-- Hidden SoundCloud embed: functional for audio playback, invisible visually -->
-            <div id="embed-slot" class="embed-slot" aria-hidden="true"></div>
+            <audio id="music-audio" preload="none"></audio>
             <audio id="tts-audio" controls hidden></audio>
             <p id="tts-hint" class="hint" hidden></p>
 
-            <a id="soundcloud-open-link" class="soundcloud-open-link" href="#" target="_blank" rel="noreferrer" hidden>
-              Open on SoundCloud ↗
+            <a id="music-open-link" class="soundcloud-open-link" href="#" target="_blank" rel="noreferrer" hidden>
+              Open source ↗
             </a>
 
             <div class="button-row">
@@ -77,6 +76,14 @@
           </article>
 
           <aside class="control-stack">
+            <article class="control-card">
+              <p class="eyebrow">find music</p>
+              <form id="music-search-form" class="chat-input-row">
+                <input id="music-search-input" placeholder="Artist, song, genre, or mood" autocomplete="off" />
+                <button type="submit">Find</button>
+              </form>
+              <ol id="music-search-results" class="queue-list"></ol>
+            </article>
             <article class="control-card queue-panel">
               <p class="eyebrow">up next</p>
               <ol id="queue-list" class="queue-list"></ol>
@@ -106,7 +113,6 @@
       <p id="message" class="message" role="status"></p>
     </main>
 
-    <script src="https://w.soundcloud.com/player/api.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

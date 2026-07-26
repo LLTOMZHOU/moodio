@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Literal
 from moodio.api.schemas import FavoriteRequest
 from moodio.domain.models import QueueItem
 from moodio.music.soundcloud import SoundCloudProvider, is_individual_track_url
+from moodio.music.providers import DiscoveryPreferences
 
 if TYPE_CHECKING:
     from moodio.runtime.service import RuntimeService
@@ -20,6 +21,15 @@ class StationControl:
     async def get_station_state(self) -> dict:
         return self.runtime.snapshot().model_dump()
 
+    async def get_playback_state(self) -> dict:
+        state = self.runtime.station_state
+        return {
+            "status": state.status,
+            "mode": state.mode,
+            "now_playing": state.now_playing.model_dump(),
+            "queue_depth": len(state.queue),
+        }
+
     async def get_queue(self) -> dict:
         return {"queue": [track.model_dump() for track in self.runtime.station_state.queue]}
 
@@ -29,6 +39,21 @@ class StationControl:
     async def get_recent_context(self, limit: int = 5) -> dict:
         bounded_limit = max(1, min(limit, 20))
         return self.runtime.state_store.recent_context(limit=bounded_limit).model_dump()
+
+    async def read_listener_profile(self) -> dict:
+        path = self.runtime.station_dir / "listener-profile.md"
+        if path.exists():
+            return {"content": path.read_text(encoding="utf-8")}
+        preferences = self.runtime.state_store.get_listener_preferences()
+        return {"content": preferences.raw_text if preferences else ""}
+
+    async def update_listener_profile(self, content: str, reason: str) -> dict:
+        if not content.strip():
+            raise ValueError("listener profile cannot be empty")
+        self.runtime.import_listener_preferences(content, source="station_profile")
+        payload = {"reason": reason, "path": "listener-profile.md"}
+        await self.runtime.broadcast("profile.updated", payload)
+        return payload
 
     async def web_search(self, query: str, limit: int = 5) -> dict:
         bounded_limit = max(1, min(limit, 10))
@@ -62,6 +87,66 @@ class StationControl:
     async def queue_soundcloud_embed(self, url: str) -> dict:
         provider_track = await self.soundcloud_provider.resolve_embed_url(url)
         return await self.runtime.queue_track(provider_track.to_queue_item())
+
+    async def search_music(
+        self,
+        query: str,
+        limit: int = 10,
+        preferences: dict | None = None,
+    ) -> dict:
+        bounded_limit = max(1, min(limit, 25))
+        parsed_preferences = DiscoveryPreferences.model_validate(preferences or {})
+        await self.runtime.broadcast("agent.tool.call", {
+            "tool": "search_music",
+            "arguments": {"query": query, "limit": bounded_limit, "preferences": parsed_preferences.model_dump(mode="json")},
+        })
+        tracks = await self.runtime.music_provider.search_tracks(
+            query,
+            limit=bounded_limit,
+            preferences=parsed_preferences,
+        )
+        self.runtime.remember_candidates(tracks)
+        payload = {"query": query, "results": [track.model_dump(mode="json") for track in tracks]}
+        await self.runtime.broadcast("agent.tool.result", {"tool": "search_music", "result": payload})
+        return payload
+
+    async def inspect_candidates(self, candidate_ids: list[str]) -> dict:
+        tracks = [self.runtime._candidates[candidate_id] for candidate_id in candidate_ids if candidate_id in self.runtime._candidates]
+        return {"candidates": [track.model_dump(mode="json") for track in tracks]}
+
+    async def queue_music(
+        self,
+        candidate_id: str,
+        reason: str = "Station programming",
+        *,
+        listener_priority: bool = False,
+    ) -> dict:
+        track = await self.runtime.resolve_candidate(candidate_id)
+        result = await self.runtime.queue_track(track.to_queue_item(), listener_priority=listener_priority)
+        return {**result, "track": track.model_dump(mode="json"), "reason": reason}
+
+    async def play_now(self, candidate_id: str, reason: str = "Listener selection") -> dict:
+        # Resolve first: an unavailable result must not disturb current playback.
+        track = await self.runtime.resolve_candidate(candidate_id)
+        await self.runtime.queue_track(track.to_queue_item())
+        result = await self.runtime.next_track()
+        return {**result, "track": track.model_dump(mode="json"), "reason": reason}
+
+    async def find_and_queue_music_multiple(self, queries: list[str]) -> dict:
+        queued: list[dict] = []
+        failed: list[str] = []
+        for query in queries:
+            try:
+                search = await self.search_music(query, limit=5)
+                candidate = next((item for item in search["results"] if item["kind"] in {"song", "video"}), None)
+                if candidate is None:
+                    failed.append(query)
+                    continue
+                result = await self.queue_music(candidate["playback_ref"], reason="Station refill")
+                queued.append({"query": query, "title": result["track"]["title"], "track_id": candidate["playback_ref"]})
+            except Exception:
+                failed.append(query)
+        return {"queued": queued, "failed": failed, "total_queued": len(queued)}
 
     async def find_and_play_soundcloud(self, query: str) -> dict:
         search_query = query if "soundcloud" in query.lower() else f"{query} SoundCloud"
