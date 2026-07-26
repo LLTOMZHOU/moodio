@@ -26,6 +26,7 @@ from moodio.runtime.service import RuntimeService, build_runtime_from_env
 
 
 _WEB_DIR = Path(__file__).resolve().parents[1] / "web"
+_LOCAL_ASSET_HEADERS = {"Cache-Control": "no-store"}
 
 
 @asynccontextmanager
@@ -42,15 +43,15 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
 
     @app.get("/")
     async def get_frontend() -> FileResponse:
-        return FileResponse(_WEB_DIR / "index.html", media_type="text/html")
+        return FileResponse(_WEB_DIR / "index.html", media_type="text/html", headers=_LOCAL_ASSET_HEADERS)
 
     @app.get("/app.js")
     async def get_frontend_script() -> FileResponse:
-        return FileResponse(_WEB_DIR / "app.js", media_type="application/javascript")
+        return FileResponse(_WEB_DIR / "app.js", media_type="application/javascript", headers=_LOCAL_ASSET_HEADERS)
 
     @app.get("/styles.css")
     async def get_frontend_styles() -> FileResponse:
-        return FileResponse(_WEB_DIR / "styles.css", media_type="text/css")
+        return FileResponse(_WEB_DIR / "styles.css", media_type="text/css", headers=_LOCAL_ASSET_HEADERS)
 
     @app.get("/dev")
     async def get_dev_console() -> FileResponse:
@@ -113,10 +114,12 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
 
     @app.post("/api/music/search")
     async def post_music_search(request: MusicSearchRequest) -> dict:
+        runtime: RuntimeService = app.state.runtime
         return await runtime_control(runtime).search_music(request.query, request.limit, request.preferences)
 
     @app.post("/api/music/queue-next")
     async def post_music_queue_next(request: CandidateActionRequest) -> dict:
+        runtime: RuntimeService = app.state.runtime
         return await runtime_control(runtime).queue_music(
             request.candidate_id,
             request.reason,
@@ -126,6 +129,7 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
 
     @app.post("/api/music/play-now")
     async def post_music_play_now(request: CandidateActionRequest) -> dict:
+        runtime: RuntimeService = app.state.runtime
         return await runtime_control(runtime).play_now(request.candidate_id, request.reason)
 
     @app.post("/api/program/commentary")

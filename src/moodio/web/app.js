@@ -259,12 +259,16 @@ async function postAction(action) {
   const audio = byId("music-audio");
   if (action === "play" && audio?.src) {
     await audio.play();
+    await postJson("/api/play", {});
     setMessage("♪ playing");
+    await refreshState();
     return;
   }
   if (action === "pause" && audio?.src) {
     audio.pause();
+    await postJson("/api/pause", {});
     setMessage("paused");
+    await refreshState();
     return;
   }
   const payload = await postJson(`/api/${action}`, {});
@@ -300,9 +304,21 @@ function renderMusicSearch(results) {
     const play = document.createElement("button");
     play.textContent = "Play";
     play.addEventListener("click", async () => {
-      await postJson("/api/music/play-now", { candidate_id: track.playback_ref });
-      setMessage(`Starting ${track.title}`);
-      await refreshState();
+      const audio = byId("music-audio");
+      const streamPath = `/api/music/stream/${encodeURIComponent(track.playback_ref)}`;
+      state.renderedPlaybackRef = track.playback_ref;
+      audio.src = streamPath;
+      audio.load();
+      const immediatePlayback = audio.play();
+      try {
+        await postJson("/api/music/play-now", { candidate_id: track.playback_ref });
+        await immediatePlayback;
+        setMessage(`♪ playing ${track.title}`);
+        await refreshState();
+      } catch (error) {
+        audio.pause();
+        setMessage(error.message || "Unable to start that track");
+      }
     });
     item.append(title, meta, queue, play);
     list.appendChild(item);

@@ -237,26 +237,17 @@ class StationControl:
             "revision": self.runtime.station_state.queue_revision,
         }
 
-
-def _parse_schedule(value: str) -> tuple[datetime, int | None]:
-    normalized = value.strip().lower()
-    now = datetime.now(timezone.utc)
-    if normalized.startswith("every ") and normalized.endswith(" hours"):
-        hours = int(normalized.removeprefix("every ").removesuffix(" hours").strip())
-        return now + timedelta(hours=hours), hours * 3600
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError("schedule must be an ISO timestamp or 'every N hours'") from exc
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc), None
-
     async def play_now(self, candidate_id: str, reason: str = "Listener selection") -> dict:
         # Resolve first: an unavailable result must not disturb current playback.
         track = await self.runtime.resolve_candidate(candidate_id)
-        await self.runtime.queue_track(track.to_queue_item())
+        await self.runtime.queue_track(
+            track.to_queue_item(),
+            listener_priority=True,
+            origin="listener",
+            reason=reason,
+        )
         result = await self.runtime.next_track()
+        await self.runtime.play()
         return {**result, "track": track.model_dump(mode="json"), "reason": reason}
 
     async def find_and_queue_music_multiple(self, queries: list[str]) -> dict:
@@ -419,6 +410,21 @@ def _parse_schedule(value: str) -> tuple[datetime, int | None]:
         payload = self.runtime.station_state.model_dump()
         await self.runtime.broadcast("station.state.updated", payload)
         return {"talk_density": level}
+
+
+def _parse_schedule(value: str) -> tuple[datetime, int | None]:
+    normalized = value.strip().lower()
+    now = datetime.now(timezone.utc)
+    if normalized.startswith("every ") and normalized.endswith(" hours"):
+        hours = int(normalized.removeprefix("every ").removesuffix(" hours").strip())
+        return now + timedelta(hours=hours), hours * 3600
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("schedule must be an ISO timestamp or 'every N hours'") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc), None
 
 
 def _is_soundcloud_playable_candidate(url: str) -> bool:
