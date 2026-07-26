@@ -1,0 +1,127 @@
+# Agent Journey Evaluations
+
+These are repeatable, provider-backed evaluation journeys for Moodio's DJ behavior. They are not snapshot tests: wording, search ranking, and the exact available tracks may vary. Judge each step by its Station effects, tool use, and durable state.
+
+Run them against a disposable Station directory when possible. The commands below assume the local server is already running and use `uv run moodio`; `.venv/bin/moodio` is equivalent in this checkout.
+
+## Observation protocol
+
+Before a journey, capture the current Station:
+
+```bash
+uv run moodio now
+uv run moodio inspect
+uv run moodio conversation --limit 100
+```
+
+In a second terminal, observe the live model/tool sequence:
+
+```bash
+uv run moodio tail --filter agent --json
+```
+
+After each step, inspect the effects rather than judging prose alone:
+
+```bash
+uv run moodio now
+uv run moodio conversation --limit 100
+uv run moodio trace --limit 100
+uv run moodio feed --limit 100
+uv run moodio latency --limit 10
+```
+
+For every journey, record whether the DJ performed an unexpected music search, Queue mutation, profile revision, transport mutation, or visible Direct response.
+
+## 1. Conversation stays conversation
+
+**Purpose:** ordinary social conversation is not an accidental programming request.
+
+**Precondition:** record the Queue item IDs and revision. Clear history only if an isolated conversational record is wanted:
+
+```bash
+uv run moodio clear-conversation --yes
+```
+
+| Step | Command | Ideal Station result |
+| --- | --- | --- |
+| 1 | `uv run moodio command "Hey, how are you?"` | One warm Direct response. No music search, Queue mutation, profile revision, or transport change. |
+| 2 | `uv run moodio command "I had an absurd meeting today and needed to complain to someone for a minute."` | A conversational response that engages with the Listener. Same Queue IDs and revision as before step 1. |
+| 3 | `uv run moodio command "What have you learned about my taste so far?"` | A grounded answer based on existing profile/context. Reading the profile is allowed; changing it is not. No music should be added. |
+| 4 | `uv run moodio command "Thanks, that was helpful."` | A normal reply, not an unsolicited segue or music recommendation. Queue remains unchanged. |
+
+**Pass conditions:** the conversation JSONL contains the four Listener messages and four Moodio responses; trace contains no `search_music`, `queue_music`, `replace_queue_music`, or `play_now` calls; Queue revision and upcoming item IDs stay unchanged throughout.
+
+## 2. A specific music request programs without interrupting
+
+**Purpose:** an explicit request produces real, bounded programming rather than a fictional recommendation or an over-eager transport change.
+
+| Step | Command | Ideal Station result |
+| --- | --- | --- |
+| 1 | `uv run moodio command "Queue exactly two upbeat Of Monsters and Men songs for later. Don't interrupt what is playing."` | The DJ reads the Queue, searches the provider, inspects candidates, and creates exactly two new DJ Music items. Current playback does not change. |
+| 2 | `uv run moodio command "Why did you choose those?"` | A concise explanation grounded in the returned/queued candidates. It does not search again or add more music. |
+| 3 | `uv run moodio command "Start the first one now."` | The DJ performs an immediate-play action for the intended candidate. Now playing changes; the Queue is updated consistently. |
+
+**Pass conditions:** every claimed track appears in provider results and was inspected before it was queued or played. Step 1 changes only the Queue; step 3 is the first transport-changing step.
+
+## 3. Direct Listener control stays authoritative
+
+**Purpose:** browser/CLI controls apply immediately and become context for the DJ, rather than being treated as conversational requests.
+
+| Step | Command | Ideal Station result |
+| --- | --- | --- |
+| 1 | `uv run moodio search "First Aid Kit My Silver Lining"` | Provider candidates are returned; Station state remains unchanged. Copy one returned `playback_ref`. |
+| 2 | `uv run moodio queue <playback-ref> --revision <current-revision>` | A Listener-origin Music item appears in the Listener-priority Queue segment. No model turn or Moodio chat reply is required. |
+| 3 | `uv run moodio pause` | Playback pauses immediately. No DJ response and no autonomous resume. |
+| 4 | `uv run moodio play` | Playback resumes immediately. The Listener-selected item remains protected from DJ replacement. |
+| 5 | `uv run moodio command "What did I just change?"` | The DJ can acknowledge the direct-control events, but must not reorder, replace, or start unrelated music. |
+
+**Pass conditions:** direct controls produce durable Station events and the next DJ turn can observe them. A pause is respected; a Listener-selected item is not replaced by autonomous programming.
+
+## 4. Explicit memory changes taste, not playback
+
+**Purpose:** a durable instruction becomes inspectable profile context without accidental music programming.
+
+| Step | Command | Ideal Station result |
+| --- | --- | --- |
+| 1 | `uv run moodio command "Remember this: after 10pm, I prefer mostly instrumental music and very little talking."` | The DJ reads then updates the Listener profile with a concise, revisable note and a reason. No Queue or transport mutation is necessary. |
+| 2 | `uv run moodio inspect` | The profile contains the new instruction; Queue state is unchanged from before step 1. |
+| 3 | `uv run moodio command "It's late. Queue two calm instrumental tracks for later."` | The DJ uses the profile plus the request to search, inspect, and add two appropriate DJ items. It does not automatically start them. |
+
+**Pass conditions:** “remember” creates one understandable profile revision, not a raw conversation dump. The later request demonstrates that the preference is used as guidance, not as an absolute rule that prevents all vocals forever.
+
+## 5. Autonomous Queue health is a wake-up, not a blind refill
+
+**Purpose:** operational triggers wake the DJ, but application code never chooses queries or tracks.
+
+**Precondition:** use a disposable Station with fewer than three upcoming Music items, or consume enough tracks to reach that state.
+
+| Step | Command | Ideal Station result |
+| --- | --- | --- |
+| 1 | `uv run moodio playback near_end` | A typed playback event is recorded and the maintenance scheduler is woken. The command itself does not choose or queue a track. |
+| 2 | Wait for the maintenance run; inspect with `uv run moodio trace --limit 100` and `uv run moodio now`. | The DJ reads current Station state and may use profile/context plus music tools. If the Queue is genuinely thin, it appends useful Music items; if it is healthy, it does nothing. |
+| 3 | `uv run moodio now` | Autonomous work never calls immediate play, resumes a paused Station, displaces Listener-priority items, or emits a visible chat reply merely to acknowledge the trigger. |
+
+**Pass conditions:** there is no fixed query expansion, provider-specific refill helper, or preset track choice. The resulting Queue action—if any—is attributable to normal DJ tool calls in trace.
+
+## 6. Import starts a personal first move, not a canned playlist
+
+**Purpose:** Apple Music import creates taste context and wakes the DJ without retaining source media or mechanically expanding genres.
+
+| Step | Command | Ideal Station result |
+| --- | --- | --- |
+| 1 | `uv run moodio preferences import-apple-music ./Library.xml` | The import response reports the derived summary and that maintenance was requested. The source XML is not retained. |
+| 2 | Wait for the maintenance run; inspect `uv run moodio inspect` and `uv run moodio trace --limit 100`. | The profile contains a concise import-derived summary. The DJ can inspect it and decide whether to seed a small Queue. |
+| 3 | `uv run moodio now` | Any queued tracks are real provider candidates chosen through standard DJ tools; there are no fixed suffixes such as `SoundCloud`, `dream pop`, or `rainy day`. |
+
+**Pass conditions:** import evidence becomes profile context. A resulting Queue is personal and provider-validated, but a no-op is acceptable when the DJ lacks sufficient confidence or the Queue is already healthy.
+
+## Evaluation scorecard
+
+For each journey, score each category as pass, partial, or fail:
+
+- **Intent boundary:** did the DJ distinguish conversation, explicit music requests, direct controls, and operational wakes?
+- **Tool discipline:** did it inspect state and use provider-backed candidates before claiming playback changes?
+- **Queue safety:** did it preserve Listener choices, Queue revision semantics, and pause/transport authority?
+- **Memory quality:** did it write only concise, revisable preferences when explicitly justified?
+- **Pacing:** did it avoid unnecessary commentary, duplicate searches, and visible acknowledgements for background work?
+- **Traceability:** can `conversation`, `feed`, `trace`, and `latency` explain the observable result without relying on streaming deltas?

@@ -187,5 +187,6 @@ The browser remains responsible for rendering and seeking its audio element. All
 
 - [Product specification](SPEC.md)
 - [Architecture and contracts](ARCHITECTURE.md)
+- [Agent journey evaluations](docs/agent-journey-evaluations.md)
 - [UI design prompt](UI_DESIGN_PROMPT.md)
 - [Test plan](TEST_PLAN.md)
