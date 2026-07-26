@@ -153,7 +153,7 @@ uv run moodio clear-conversation --yes
 
 **Precondition:** use a disposable Station with a known profile. Record its profile text and Queue before starting.
 
-**Status:** intended behavior to evaluate and build toward. The current prompt makes explicit profile updates mandatory, but does not yet make this implicit inference mandatory.
+**Status:** implemented as a model-judgment rule, not a fixed classifier. The DJ must treat one isolated action as insufficient evidence; when several coherent direct signals form a useful current pattern, it can write one cautious, revisable profile revision.
 
 | Step | Command | Ideal Station result |
 | --- | --- | --- |

@@ -77,6 +77,36 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
         runtime: RuntimeService = app.state.runtime
         return runtime.journal.conversation_page(before=before, limit=min(max(limit, 1), 100))
 
+    @app.get("/api/profile")
+    async def get_listener_profile() -> dict:
+        runtime: RuntimeService = app.state.runtime
+        revision = runtime.journal.latest_profile_revision()
+        return {
+            "content": runtime._listener_profile_text(),
+            "revision": runtime.profile_revision_summary(revision or {}),
+        }
+
+    @app.get("/api/profile/revisions")
+    async def get_profile_revisions(limit: int = 50) -> dict:
+        runtime: RuntimeService = app.state.runtime
+        return {"items": runtime.profile_revisions(limit=min(max(limit, 1), 500))}
+
+    @app.get("/api/profile/revisions/{revision_id}")
+    async def get_profile_revision(revision_id: str, against: str | None = None) -> dict:
+        runtime: RuntimeService = app.state.runtime
+        try:
+            return runtime.profile_revision_detail(revision_id, against_revision_id=against)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/profile/revisions/{revision_id}/restore")
+    async def restore_profile_revision(revision_id: str) -> dict:
+        runtime: RuntimeService = app.state.runtime
+        try:
+            return await runtime.restore_listener_profile_revision(revision_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.delete("/api/conversation")
     async def clear_conversation() -> dict:
         runtime: RuntimeService = app.state.runtime
@@ -227,11 +257,25 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
     @app.post("/api/preferences/import")
     async def post_preferences_import(request: PreferenceImportRequest) -> dict:
         runtime: RuntimeService = app.state.runtime
-        preferences = runtime.import_listener_preferences(request.profile_text, source=request.source)
+        result = runtime.import_listener_preferences(
+            request.profile_text,
+            source=request.source,
+            reason="Listener imported profile text.",
+        )
+        if result.created:
+            payload = {
+                "changed": True,
+                "path": "listener-profile.md",
+                "profile_revision": runtime.profile_revision_summary(result.revision),
+            }
+            await runtime.broadcast("profile.updated", payload)
+            runtime._request_maintenance("profile.updated", payload)
         return {
-            "source": preferences.source,
-            "raw_text": preferences.raw_text,
-            "seed_queries": preferences.seed_queries,
+            "source": result.preferences.source,
+            "raw_text": result.preferences.raw_text,
+            "seed_queries": result.preferences.seed_queries,
+            "profile_revision": runtime.profile_revision_summary(result.revision),
+            "profile_changed": result.created,
         }
 
     @app.post("/api/preferences/apple-music-xml")

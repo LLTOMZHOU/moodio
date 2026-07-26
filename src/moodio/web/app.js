@@ -20,6 +20,63 @@ function setMessage(text) {
   byId("message").textContent = text;
 }
 
+function profileReason(revision) {
+  return revision?.reason || "Moodio keeps a concise, revisable working impression of your taste.";
+}
+
+async function refreshProfileSummary() {
+  const response = await fetch("/api/profile");
+  if (!response.ok) return;
+  const profile = await response.json();
+  const summary = byId("profile-summary");
+  if (!profile.revision?.revision_id) {
+    summary.textContent = "Add music requests or import Apple Music to give Moodio a starting impression.";
+    return;
+  }
+  summary.textContent = profileReason(profile.revision);
+}
+
+function profileHistoryEntry(revision, detail) {
+  const item = document.createElement("article");
+  item.className = "profile-revision";
+  const heading = document.createElement("p");
+  heading.className = "profile-revision-heading";
+  heading.textContent = `${new Date(revision.at).toLocaleString()} · ${revision.source}`;
+  const reason = document.createElement("p");
+  reason.className = "hint";
+  reason.textContent = profileReason(revision);
+  const diff = document.createElement("pre");
+  diff.className = "profile-diff";
+  diff.textContent = detail.diff?.diff || "Initial profile snapshot.";
+  item.append(heading, reason, diff);
+  return item;
+}
+
+async function openProfileHistory() {
+  const dialog = byId("profile-history-dialog");
+  const content = byId("profile-history-content");
+  content.textContent = "Loading profile history…";
+  dialog.showModal();
+  try {
+    const response = await fetch("/api/profile/revisions?limit=20");
+    if (!response.ok) throw new Error(await response.text());
+    const { items } = await response.json();
+    content.innerHTML = "";
+    const newestFirst = [...(items || [])].reverse();
+    if (!newestFirst.length) {
+      content.textContent = "No profile revisions yet.";
+      return;
+    }
+    for (const revision of newestFirst) {
+      const detailResponse = await fetch(`/api/profile/revisions/${encodeURIComponent(revision.revision_id)}`);
+      if (!detailResponse.ok) throw new Error(await detailResponse.text());
+      content.appendChild(profileHistoryEntry(revision, await detailResponse.json()));
+    }
+  } catch (error) {
+    content.textContent = error.message || "Unable to load profile history.";
+  }
+}
+
 function fadeMusicOut(duration = 800) {
   const audio = byId("music-audio");
   if (!audio || !audio.src) return;
@@ -318,8 +375,12 @@ function connectEvents() {
       state.conversationHasMore = false;
       renderChat();
     }
+    if (message.event === "profile.updated" || message.event === "profile.imported") {
+      refreshProfileSummary();
+      setMessage("Taste notes updated — open History to inspect the change.");
+    }
   };
-  ["station.state.updated", "tts.audio.ready", "tts.audio.failed", "queue.updated", "agent.response.delta", "agent.turn.failed", "conversation.message.saved", "conversation.cleared"].forEach((name) => {
+  ["station.state.updated", "tts.audio.ready", "tts.audio.failed", "queue.updated", "agent.response.delta", "agent.turn.failed", "conversation.message.saved", "conversation.cleared", "profile.updated", "profile.imported"].forEach((name) => {
     events.addEventListener(name, handleMessage);
   });
   events.addEventListener("error", () => setMessage("reconnecting live updates…"));
@@ -499,6 +560,9 @@ byId("apple-music-import-file").addEventListener("change", (event) => {
   byId("apple-music-import-name").textContent = event.target.files?.[0]?.name || "No file selected";
 });
 
+byId("profile-history-open").addEventListener("click", () => openProfileHistory());
+byId("profile-history-close").addEventListener("click", () => byId("profile-history-dialog").close());
+
 const musicAudio = byId("music-audio");
 musicAudio.addEventListener("loadedmetadata", renderPlaybackProgress);
 musicAudio.addEventListener("durationchange", renderPlaybackProgress);
@@ -529,4 +593,4 @@ byId("chat-messages").addEventListener("scroll", () => {
   if (container.scrollTop < 48) loadConversation({ older: true }).catch((error) => setMessage(error.message));
 });
 
-Promise.all([refreshState(), loadConversation()]).then(connectEvents).catch((error) => setMessage(error.message));
+Promise.all([refreshState(), loadConversation(), refreshProfileSummary()]).then(connectEvents).catch((error) => setMessage(error.message));

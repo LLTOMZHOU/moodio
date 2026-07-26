@@ -102,6 +102,13 @@
               </form>
               <ol id="music-search-results" class="queue-list"></ol>
             </article>
+            <article class="control-card taste-card">
+              <div class="card-title-row">
+                <p class="eyebrow">your taste notes</p>
+                <button id="profile-history-open" class="quiet-button" type="button">History</button>
+              </div>
+              <p id="profile-summary" class="hint">Moodio keeps its working impression of your taste here.</p>
+            </article>
             <article class="control-card queue-panel">
               <p class="eyebrow">up next</p>
               <ol id="queue-list" class="queue-list"></ol>
@@ -133,6 +140,17 @@
 
       <p id="message" class="message" role="status"></p>
     </main>
+
+    <dialog id="profile-history-dialog" class="profile-history-dialog">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow">your taste notes</p>
+          <h2>Profile history</h2>
+        </div>
+        <button id="profile-history-close" class="quiet-button" type="button">Close</button>
+      </div>
+      <div id="profile-history-content" class="profile-history-content"></div>
+    </dialog>
 
     <script src="/app.js?local=1"></script>
   </body>

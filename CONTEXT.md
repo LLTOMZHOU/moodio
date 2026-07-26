@@ -57,7 +57,7 @@ The one continuous, compacted DJ conversation associated with a Station and shar
 _Avoid_: Process, task, profile
 
 **Profile revision**:
-An inspectable recorded version of the Listener profile after the DJ or Listener changes it.
+An immutable full-text snapshot of the Listener profile with its parent, source, and concise reason. Diffs are derived between snapshots; restoring one creates a new revision rather than mutating history.
 _Avoid_: Notification, approval
 
 **Station command**:
@@ -147,6 +147,8 @@ _Avoid_: Listener selection, Music item
 - An already-started bounded DJ run finishes rather than being cancelled mid-mutation; direct Listener controls still execute immediately, and the waiting **Listener message** runs next.
 - Background DJ runs have a configurable short wall-clock budget (initially about 20 seconds), checked between model and tool steps; a later trigger continues work that did not fit. Listener-requested runs have a looser budget.
 - A Listener profile change creates a **Profile revision** that the Listener may inspect or restore without approving the change first.
+- A **Profile revision** is append-only and stores the whole editable profile so its diff remains available even when later revisions change the profile again.
+- Restoring a **Profile revision** writes a new child revision with the restored text; it never rewrites prior profile history.
 - An automatic **Profile revision** stores its one-sentence reason in revision/event metadata, not in the editable Listener profile text.
 - A **Station command** is serialized for one **Station** and produces one or more **Station events**.
 - A **Pending control** may make a direct Listener action feel immediate, but the controller-confirmed Station snapshot always wins.

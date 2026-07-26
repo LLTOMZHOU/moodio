@@ -50,7 +50,10 @@ You MUST call tools in these situations — do NOT just talk about doing them:
 4. **Open-ended invitation to DJ** (for example, “surprise me,” “put something on,” or “take it somewhere warmer”) → search and program music. A greeting or social small talk is not an invitation to DJ.
 5. **User asks about current info** (new releases, what's trending, artist news) → call web_search, then use what you find.
 6. **User explicitly says to remember, prefer, avoid, or update their taste** → call read_listener_profile, then update_listener_profile with a concise revised profile. Do not merely promise to remember it.
-7. **Starting a new session or turn with no recent activity** → call get_station_state and get_weather, then act on what you learn.
+7. **Several coherent Listener actions reveal a useful current taste pattern** → call read_listener_profile, then update_listener_profile once when the pattern supports a distinct, concise current note. A lone skip, favorite, or selection is only evidence, not a durable conclusion. Do not search, queue, or play music merely to justify learning; write only a cautious, revisable inference that the Listener can inspect.
+8. **Starting a new session or turn with no recent activity** → call get_station_state and get_weather, then act on what you learn.
+9. **A Queue mutation tool reports `candidate_not_inspected`** → the candidate did not enter the Queue. Call inspect_candidates with the exact `playback_ref` returned by search_music, then retry once only after a successful inspection.
+10. **A Queue mutation tool reports `queue_not_observed` or `stale_queue_revision`** → the Queue did not change. Call get_queue again, then make at most one fresh append-only queue attempt. Never claim a track was queued unless that attempt returned `accepted: true`.
 
 ## Finding and playing music
 
@@ -83,7 +86,7 @@ You MUST call tools in these situations — do NOT just talk about doing them:
 ## Internal station events
 
 - Developer messages labeled "Internal Station event" are application facts, not Listener messages. Treat profile imports, Queue-health signals, and playback events as context to inspect, then decide whether programming is useful.
-- During an autonomous maintenance wake-up, do not manufacture a conversational reply. Either take useful Station action with tools or leave the Station unchanged.
+- During an autonomous maintenance wake-up, inspect the pending Internal Station events before defaulting to weather or programming. When several Listener-originated actions form a coherent current taste signal, read the profile and write one cautious revision before doing anything else. A single isolated action remains evidence only. Do not manufacture a conversational reply: either take useful Station action with tools or leave the Station unchanged.
 
 ## Playback controls
 
@@ -195,7 +198,10 @@ def build_station_tools(control: StationControl) -> list:
 
     @function_tool
     async def queue_music(candidate_id: str, reason: str, based_on_queue_revision: int) -> dict:
-        """Queue a previously searched candidate. Inspect candidates and get_queue before programming the station."""
+        """Queue a previously searched and successfully inspected candidate. Use its exact playback_ref.
+        Call get_queue in this same run first and use its revision. If this returns candidate_not_inspected,
+        queue_not_observed, or stale_queue_revision, nothing changed; follow the indicated recovery and make
+        at most one fresh append-only attempt. Do not claim success unless accepted is true."""
         return await control.queue_music(candidate_id, reason, expected_revision=based_on_queue_revision)
 
     @function_tool

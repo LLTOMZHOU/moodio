@@ -99,6 +99,15 @@ class _TurnTiming:
     model_rounds: int = 0
 
 
+@dataclass(frozen=True)
+class ListenerProfileWrite:
+    """Result of materializing one Listener-profile revision."""
+
+    preferences: ListenerPreferences
+    revision: dict[str, object]
+    created: bool
+
+
 def _elapsed_ms(start: float | None, end: float) -> int | None:
     if start is None:
         return None
@@ -191,6 +200,7 @@ class RuntimeService:
         self._listener_priority_count = 0
         self._session: Session = JsonlSession(self.station_dir / "agent-session.jsonl")
         self._agent_lane = asyncio.Lock()
+        self._queue_mutation_lock = asyncio.Lock()
         self._pending_internal_events: list[dict[str, object]] = []
         self._subscribers: list[asyncio.Queue[dict]] = []
         self._trace_id: str = ""
@@ -200,6 +210,7 @@ class RuntimeService:
         self._maintenance_wake = asyncio.Event()
         self._last_editorial_pulse_at: datetime | None = None
         self._seed_store()
+        self._ensure_profile_revision_history()
         self.journal.ensure_conversation_history()
         self.journal.save_snapshot(self.station_state.model_dump(mode="json"))
 
@@ -343,22 +354,50 @@ class RuntimeService:
                 "error": str(exc),
             })
 
-    def import_listener_preferences(self, profile_text: str, *, source: str = "apple_music") -> ListenerPreferences:
-        preferences = ListenerPreferences(source=source, raw_text=profile_text.strip(), seed_queries=[])
+    def import_listener_preferences(
+        self,
+        profile_text: str,
+        *,
+        source: str = "apple_music",
+        seed_queries: list[str] | None = None,
+        reason: str = "Listener imported profile text.",
+    ) -> ListenerProfileWrite:
+        """Materialize a profile and append a snapshot only when its text changed."""
+        content = profile_text.strip()
+        if not content:
+            raise ValueError("listener profile cannot be empty")
+        normalized_seed_queries = list(seed_queries or [])
+        preferences = ListenerPreferences(
+            source=source,
+            raw_text=content,
+            seed_queries=normalized_seed_queries,
+        )
+        latest = self.journal.latest_profile_revision()
+        created = latest is None or latest.get("content") != content
+        if created:
+            revision = self.journal.append_profile_revision(
+                content=content,
+                source=source,
+                reason=reason.strip() or "Profile updated.",
+                seed_queries=normalized_seed_queries,
+                parent_revision_id=str(latest["revision_id"]) if latest else None,
+            )
+        else:
+            revision = latest
         self.state_store.save_listener_preferences(preferences)
-        (self.station_dir / "listener-profile.md").write_text(profile_text.strip() + "\n", encoding="utf-8")
-        return preferences
+        self._write_listener_profile_projection(content)
+        return ListenerProfileWrite(preferences=preferences, revision=revision, created=created)
 
     async def import_apple_music_export(self, content: bytes) -> dict:
         """Apply a Listener-selected Music.app XML export without retaining it."""
         imported = import_apple_music_xml(content)
-        preferences = ListenerPreferences(
+        profile_write = self.import_listener_preferences(
+            imported.profile_text,
             source="apple_music_xml",
-            raw_text=imported.profile_text,
             seed_queries=imported.seed_queries,
+            reason="Imported a derived taste summary from a Listener-selected Apple Music XML export.",
         )
-        self.state_store.save_listener_preferences(preferences)
-        (self.station_dir / "listener-profile.md").write_text(imported.profile_text + "\n", encoding="utf-8")
+        preferences = profile_write.preferences
         summary = {
             "source": preferences.source,
             "track_count": imported.track_count,
@@ -366,6 +405,8 @@ class RuntimeService:
             "top_artists": imported.top_artists,
             "top_genres": imported.top_genres,
             "seed_queries": imported.seed_queries,
+            "profile_revision": self.profile_revision_summary(profile_write.revision),
+            "profile_changed": profile_write.created,
         }
         await self.broadcast("profile.imported", summary)
         self._request_maintenance("profile.imported", summary)
@@ -384,6 +425,72 @@ class RuntimeService:
                 start_ms=segment.start_ms,
                 duration_ms=segment.duration_ms,
             )
+
+    def _ensure_profile_revision_history(self) -> None:
+        """Give a pre-revision Station one immutable baseline without altering its profile."""
+        if self.journal.latest_profile_revision() is not None:
+            return
+        content = self._listener_profile_text()
+        if not content:
+            return
+        preferences = self.state_store.get_listener_preferences()
+        source = preferences.source if preferences else "legacy_profile"
+        seed_queries = preferences.seed_queries if preferences else []
+        self.journal.append_profile_revision(
+            content=content,
+            source=source,
+            reason="Captured the existing Listener profile as the revision-history baseline.",
+            seed_queries=seed_queries,
+        )
+        self._write_listener_profile_projection(content)
+
+    def _write_listener_profile_projection(self, content: str) -> None:
+        path = self.station_dir / "listener-profile.md"
+        temporary_path = path.with_suffix(".tmp")
+        with temporary_path.open("w", encoding="utf-8") as handle:
+            handle.write(content.strip())
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_path.replace(path)
+
+    def profile_revision_summary(self, revision: dict[str, object]) -> dict[str, object]:
+        return {
+            key: revision.get(key)
+            for key in ("revision_id", "at", "source", "reason", "parent_revision_id", "seed_queries")
+        }
+
+    def profile_revisions(self, *, limit: int | None = None) -> list[dict[str, object]]:
+        return [self.profile_revision_summary(revision) for revision in self.journal.profile_revisions(limit=limit)]
+
+    def profile_revision_detail(self, revision_id: str, *, against_revision_id: str | None = None) -> dict[str, object]:
+        revision = self.journal.profile_revision(revision_id)
+        if revision is None:
+            raise ValueError("profile revision does not exist")
+        return {
+            "revision": revision,
+            "diff": self.journal.profile_diff(revision_id, against_revision_id=against_revision_id),
+        }
+
+    async def restore_listener_profile_revision(self, revision_id: str) -> dict[str, object]:
+        revision = self.journal.profile_revision(revision_id)
+        if revision is None:
+            raise ValueError("profile revision does not exist")
+        result = self.import_listener_preferences(
+            str(revision["content"]),
+            source="listener_restore",
+            seed_queries=list(revision.get("seed_queries", [])),
+            reason=f"Listener restored profile revision {revision_id}.",
+        )
+        payload = {
+            "changed": result.created,
+            "restored_revision_id": revision_id,
+            "profile_revision": self.profile_revision_summary(result.revision),
+        }
+        if result.created:
+            await self.broadcast("profile.updated", payload)
+            self._request_maintenance("profile.updated", payload)
+        return payload
 
     def snapshot(self) -> NowResponse:
         return NowResponse.model_validate(self.station_state.model_dump())
@@ -433,6 +540,8 @@ class RuntimeService:
         return {
             "station": self.snapshot().model_dump(),
             "listener_profile": self._listener_profile_text(),
+            "profile_revision": self.profile_revision_summary(self.journal.latest_profile_revision() or {}),
+            "profile_revision_count": len(self.journal.profile_revisions()),
             "recent_context": asdict(self.state_store.recent_context(limit=20)),
             "tasks": [task.model_dump(mode="json") for task in self.task_store.list()],
             "conversation_path": str(self.journal.conversation_path),
@@ -791,6 +900,30 @@ class RuntimeService:
         listener_priority: bool = False,
         origin: str = "dj",
         reason: str = "Station programming",
+        expected_revision: int | None = None,
+    ) -> dict:
+        """Commit one Queue item, optionally guarded by the revision the caller observed."""
+        async with self._queue_mutation_lock:
+            if expected_revision is not None and expected_revision != self.station_state.queue_revision:
+                return {
+                    "accepted": False,
+                    "reason": "stale_queue_revision",
+                    **self._queue_payload(),
+                }
+            return await self._queue_track_locked(
+                track,
+                listener_priority=listener_priority,
+                origin=origin,
+                reason=reason,
+            )
+
+    async def _queue_track_locked(
+        self,
+        track: QueueItem,
+        *,
+        listener_priority: bool,
+        origin: str,
+        reason: str,
     ) -> dict:
         item = ProgramItem.music(track, origin=origin, reason=reason)
         if listener_priority:

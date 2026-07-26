@@ -1,0 +1,3 @@
+# Keep Listener-profile revisions as append-only full snapshots
+
+The Listener profile remains a simple editable Markdown projection, but every meaningful change appends an immutable full-text snapshot to the Station directory with its parent revision, source, and concise reason. Diffs are calculated from snapshots and a restore creates a new child revision. This deliberately favors a small JSONL history over a second mutable preference model: profile text is tiny, recovery is transparent, and the Listener can always inspect exactly what the DJ inferred without depending on SQLite history or model-session compaction.

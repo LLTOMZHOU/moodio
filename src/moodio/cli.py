@@ -178,6 +178,31 @@ async def _run_async(
             headers={"content-type": "application/xml"},
             timeout=120,
         ), stdout)
+    elif args.command_name == "preferences_show":
+        _print_json(await _server_request(args, "GET", "/api/profile"), stdout)
+    elif args.command_name == "preferences_history":
+        _print_json(await _server_request(
+            args,
+            "GET",
+            "/api/profile/revisions",
+            params={"limit": args.limit},
+        ), stdout)
+    elif args.command_name in {"preferences_revision", "preferences_diff"}:
+        params = {"against": args.against} if args.against else None
+        _print_json(await _server_request(
+            args,
+            "GET",
+            f"/api/profile/revisions/{args.revision_id}",
+            params=params,
+        ), stdout)
+    elif args.command_name == "preferences_restore":
+        if not args.yes:
+            raise ValueError("refusing to restore a profile revision without --yes")
+        _print_json(await _server_request(
+            args,
+            "POST",
+            f"/api/profile/revisions/{args.revision_id}/restore",
+        ), stdout)
     else:
         raise ValueError(f"unsupported command: {args.command_name}")
 
@@ -494,6 +519,7 @@ def _parser() -> argparse.ArgumentParser:
     preference_subcommands = preferences.add_subparsers(dest="preferences_command", required=True)
 
     preference_import = preference_subcommands.add_parser("import", help="Import listener preferences from a text file")
+    _add_server_options(preference_import)
     preference_import.add_argument("profile_file", type=Path)
     preference_import.add_argument("--source", default="apple_music")
     preference_import.set_defaults(command_name="preferences_import")
@@ -502,8 +528,36 @@ def _parser() -> argparse.ArgumentParser:
         "import-apple-music",
         help="Import a Music.app XML playlist or library export without retaining the XML",
     )
+    _add_server_options(apple_music_import)
     apple_music_import.add_argument("xml_file", type=Path)
     apple_music_import.set_defaults(command_name="preferences_apple_music_import")
+
+    preference_show = preference_subcommands.add_parser("show", help="Show the current Listener profile and latest revision")
+    _add_server_options(preference_show)
+    preference_show.set_defaults(command_name="preferences_show")
+
+    preference_history = preference_subcommands.add_parser("history", help="List immutable Listener-profile revisions")
+    _add_server_options(preference_history)
+    preference_history.add_argument("--limit", default=50, type=int)
+    preference_history.set_defaults(command_name="preferences_history")
+
+    preference_revision = preference_subcommands.add_parser("revision", help="Show one full profile revision and its derived diff")
+    _add_server_options(preference_revision)
+    preference_revision.add_argument("revision_id")
+    preference_revision.add_argument("--against", help="Revision id to compare against instead of the parent")
+    preference_revision.set_defaults(command_name="preferences_revision")
+
+    preference_diff = preference_subcommands.add_parser("diff", help="Alias for profile revision with its derived diff")
+    _add_server_options(preference_diff)
+    preference_diff.add_argument("revision_id")
+    preference_diff.add_argument("--against", help="Revision id to compare against instead of the parent")
+    preference_diff.set_defaults(command_name="preferences_diff")
+
+    preference_restore = preference_subcommands.add_parser("restore", help="Restore a revision by appending a new profile revision")
+    _add_server_options(preference_restore)
+    preference_restore.add_argument("revision_id")
+    preference_restore.add_argument("--yes", action="store_true", help="Confirm the profile restore")
+    preference_restore.set_defaults(command_name="preferences_restore")
 
     return parser
 

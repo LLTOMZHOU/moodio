@@ -20,6 +20,8 @@ RuntimeEventName = Literal[
     "station.state.updated",
     "queue.updated",
     "favorites.updated",
+    "profile.updated",
+    "profile.imported",
     # Agent turn lifecycle
     "agent.turn.started",
     "agent.turn.model_started",

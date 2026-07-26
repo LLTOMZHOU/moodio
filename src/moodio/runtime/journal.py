@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from difflib import unified_diff
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ class StationJournal:
         self.snapshot_path = self.directory / "station.json"
         self.feed_path = self.directory / "station-feed.jsonl"
         self.conversation_path = self.directory / "station-conversation.jsonl"
+        self.profile_revisions_path = self.directory / "listener-profile-revisions.jsonl"
 
     def save_snapshot(self, snapshot: dict[str, Any]) -> None:
         temporary_path = self.snapshot_path.with_suffix(".tmp")
@@ -120,6 +122,69 @@ class StationJournal:
             not in {"agent.turn.started", "agent.turn.completed", "agent.turn.failed"}
         ]
         self._rewrite_jsonl(self.feed_path, retained_feed)
+
+    def append_profile_revision(
+        self,
+        *,
+        content: str,
+        source: str,
+        reason: str,
+        seed_queries: list[str] | None = None,
+        parent_revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Append one immutable full-text Listener-profile snapshot."""
+        revision = {
+            "revision_id": f"profile_{uuid.uuid4().hex}",
+            "at": datetime.now(timezone.utc).isoformat(),
+            "content": content,
+            "source": source,
+            "reason": reason,
+            "seed_queries": list(seed_queries or []),
+            "parent_revision_id": parent_revision_id,
+        }
+        with self.profile_revisions_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(revision, sort_keys=True))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        return revision
+
+    def profile_revisions(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        revisions = self._all_from(self.profile_revisions_path)
+        if limit is not None:
+            revisions = revisions[-max(1, limit):]
+        return revisions
+
+    def profile_revision(self, revision_id: str) -> dict[str, Any] | None:
+        return next(
+            (revision for revision in self.profile_revisions() if revision.get("revision_id") == revision_id),
+            None,
+        )
+
+    def latest_profile_revision(self) -> dict[str, Any] | None:
+        revisions = self.profile_revisions(limit=1)
+        return revisions[0] if revisions else None
+
+    def profile_diff(self, revision_id: str, *, against_revision_id: str | None = None) -> dict[str, Any]:
+        revision = self.profile_revision(revision_id)
+        if revision is None:
+            raise ValueError("profile revision does not exist")
+        against_id = against_revision_id if against_revision_id is not None else revision.get("parent_revision_id")
+        against = self.profile_revision(str(against_id)) if against_id else None
+        before = str(against.get("content", "")) if against else ""
+        after = str(revision.get("content", ""))
+        diff = "\n".join(unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=f"profile:{against.get('revision_id', 'empty') if against else 'empty'}",
+            tofile=f"profile:{revision_id}",
+            lineterm="",
+        ))
+        return {
+            "revision_id": revision_id,
+            "against_revision_id": against.get("revision_id") if against else None,
+            "diff": diff,
+        }
 
     def _recent_from(self, path: Path, limit: int) -> list[dict[str, Any]]:
         return self._all_from(path)[-max(1, limit):]

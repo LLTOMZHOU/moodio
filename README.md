@@ -174,6 +174,13 @@ uv run moodio voice on
 uv run moodio playback near_end  # simulate the browser player lifecycle
 uv run moodio transcribe ./command.wav
 
+# Inspect the simple, append-only profile history and a derived unified diff.
+uv run moodio preferences show
+uv run moodio preferences history
+uv run moodio preferences diff profile_<revision-id>
+# Restore creates a new revision; it never erases history.
+uv run moodio preferences restore profile_<revision-id> --yes
+
 # Read or clear the same durable conversation the browser renders.
 uv run moodio conversation --limit 50
 uv run moodio clear-conversation --yes

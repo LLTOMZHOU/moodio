@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
 from datetime import datetime, timedelta, timezone
+from dataclasses import asdict
+from typing import TYPE_CHECKING, Literal
 from moodio.api.schemas import FavoriteRequest
 from moodio.domain.models import ProgramItem, QueueItem
 from moodio.music.soundcloud import SoundCloudProvider, is_individual_track_url
@@ -19,6 +20,8 @@ class StationControl:
     def __init__(self, runtime: RuntimeService, *, soundcloud_provider: SoundCloudProvider | None = None) -> None:
         self.runtime = runtime
         self.soundcloud_provider = soundcloud_provider or runtime.soundcloud_provider
+        self._observed_queue_revision: int | None = None
+        self._inspected_candidate_ids: set[str] = set()
 
     async def get_station_state(self) -> dict:
         return self.runtime.snapshot().model_dump()
@@ -33,32 +36,44 @@ class StationControl:
         }
 
     async def get_queue(self) -> dict:
-        return {
+        payload = {
             **self.runtime._queue_payload(),
             "current_item": self.runtime.station_state.now_playing.model_dump(),
             "playback_status": self.runtime.station_state.status,
         }
+        self._observed_queue_revision = payload["revision"]
+        return payload
 
     async def get_transcript(self) -> dict:
         return self.runtime.transcript_snapshot()
 
     async def get_recent_context(self, limit: int = 5) -> dict:
         bounded_limit = max(1, min(limit, 20))
-        return self.runtime.state_store.recent_context(limit=bounded_limit).model_dump()
+        return asdict(self.runtime.state_store.recent_context(limit=bounded_limit))
 
     async def read_listener_profile(self) -> dict:
-        path = self.runtime.station_dir / "listener-profile.md"
-        if path.exists():
-            return {"content": path.read_text(encoding="utf-8")}
-        preferences = self.runtime.state_store.get_listener_preferences()
-        return {"content": preferences.raw_text if preferences else ""}
+        revision = self.runtime.journal.latest_profile_revision()
+        return {
+            "content": self.runtime._listener_profile_text(),
+            "revision": self.runtime.profile_revision_summary(revision or {}),
+        }
 
     async def update_listener_profile(self, content: str, reason: str) -> dict:
         if not content.strip():
             raise ValueError("listener profile cannot be empty")
-        self.runtime.import_listener_preferences(content, source="station_profile")
-        payload = {"reason": reason, "path": "listener-profile.md"}
-        await self.runtime.broadcast("profile.updated", payload)
+        result = self.runtime.import_listener_preferences(
+            content,
+            source="dj",
+            reason=reason,
+        )
+        payload = {
+            "changed": result.created,
+            "path": "listener-profile.md",
+            "profile_revision": self.runtime.profile_revision_summary(result.revision),
+        }
+        if result.created:
+            await self.runtime.broadcast("profile.updated", payload)
+            self.runtime._request_maintenance("profile.updated", payload)
         return payload
 
     async def schedule_station_task(self, instruction: str, run_at_or_recurrence: str) -> dict:
@@ -151,6 +166,7 @@ class StationControl:
 
     async def inspect_candidates(self, candidate_ids: list[str]) -> dict:
         tracks = [self.runtime._candidates[candidate_id] for candidate_id in candidate_ids if candidate_id in self.runtime._candidates]
+        self._inspected_candidate_ids.update(track.playback_ref for track in tracks)
         return {"candidates": [track.model_dump(mode="json") for track in tracks]}
 
     async def queue_music(
@@ -161,15 +177,28 @@ class StationControl:
         listener_priority: bool = False,
         expected_revision: int | None = None,
     ) -> dict:
-        if expected_revision is not None and expected_revision != self.runtime.station_state.queue_revision:
-            return self._stale_queue_result()
+        if not listener_priority and candidate_id not in self._inspected_candidate_ids:
+            return {
+                "accepted": False,
+                "error": "candidate_not_inspected",
+                "candidate_id": candidate_id,
+            }
+        if not listener_priority and self._observed_queue_revision != expected_revision:
+            return {
+                "accepted": False,
+                "error": "queue_not_observed",
+                "revision": self.runtime.station_state.queue_revision,
+            }
         track = await self.runtime.resolve_candidate(candidate_id)
         result = await self.runtime.queue_track(
             track.to_queue_item(),
             listener_priority=listener_priority,
             origin="listener" if listener_priority else "dj",
             reason=reason,
+            expected_revision=expected_revision,
         )
+        if not result.get("accepted"):
+            return self._stale_queue_result()
         return {**result, "track": track.model_dump(mode="json"), "reason": reason}
 
     async def queue_commentary(
