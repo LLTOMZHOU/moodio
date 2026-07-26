@@ -19,7 +19,7 @@ from moodio.api.schemas import (
     TransportActionResponse,
 )
 from moodio.domain.events import RuntimeEvent
-from moodio.domain.models import QueueItem, STATION_PLACEHOLDER_TRACK_ID, StationState, TranscriptSegment
+from moodio.domain.models import ProgramItem, QueueItem, STATION_PLACEHOLDER_TRACK_ID, StationState, TranscriptSegment
 from moodio.domain.triggers import UserCommandTrigger
 from moodio.executor import execute_action
 from moodio.info import (
@@ -39,6 +39,7 @@ from agents.memory import Session
 from moodio.runtime.control import StationControl
 from moodio.runtime.journal import StationJournal
 from moodio.runtime.session import JsonlSession
+from moodio.runtime.tasks import StationTaskStore
 from moodio.state_store import ListenerPreferences, StateStore
 from moodio.station_agent import run_station_turn
 from moodio.voice import (
@@ -136,6 +137,7 @@ class RuntimeService:
         self.state_store = state_store
         self.station_dir = Path(station_dir) if station_dir else self.state_store.db_path.parent / "station"
         self.journal = StationJournal(self.station_dir)
+        self.task_store = StationTaskStore(self.station_dir / "station-tasks.json")
         self._station_turn_runner = station_turn_runner or run_station_turn
         self._runtime_event_executor = runtime_event_executor or execute_action
         self.speech_synthesizer = speech_synthesizer
@@ -156,7 +158,9 @@ class RuntimeService:
                 "status": "playing",
                 "talk_density": "balanced",
                 "now_playing": _seed_now_playing().model_dump(),
-                "queue": [_seed_next_track().model_dump()],
+                "queue": [ProgramItem.music(
+                    _seed_next_track(), origin="scheduler", reason="Initial station seed"
+                ).model_dump()],
                 "favorites_enabled": True,
             }
         )
@@ -235,6 +239,7 @@ class RuntimeService:
         await self._apply_agent_message(agent_message)
         self._sync_persisted_play_context()
         await self.ensure_queue_seeded(reason="startup")
+        await self.run_due_tasks()
 
         await self.broadcast("agent.turn.completed", {
             "output": agent_message,
@@ -262,8 +267,34 @@ class RuntimeService:
             while True:
                 await asyncio.sleep(600)
                 await self.ensure_queue_seeded(reason="cadence")
+                await self.run_due_tasks()
         except asyncio.CancelledError:
             pass
+
+    async def run_due_tasks(self) -> None:
+        tasks = self.task_store.list()
+        due_ids = {task.task_id for task in self.task_store.due()}
+        if not due_ids:
+            return
+        updated = []
+        for task in tasks:
+            if task.task_id not in due_ids:
+                updated.append(task)
+                continue
+            await self.broadcast("task.started", {"task_id": task.task_id, "instruction": task.instruction})
+            try:
+                await self._station_turn_runner(
+                    f"[scheduled station task] {task.instruction}",
+                    StationControl(self),
+                    session=self._session,
+                )
+            except Exception as exc:
+                await self.broadcast("task.failed", {"task_id": task.task_id, "error": str(exc)})
+                updated.append(task)
+                continue
+            updated.append(self.task_store.advance(task))
+            await self.broadcast("task.completed", {"task_id": task.task_id})
+        self.task_store.save(updated)
 
     def import_listener_preferences(self, profile_text: str, *, source: str = "apple_music") -> ListenerPreferences:
         seed_queries = _seed_queries_from_profile_text(profile_text)
@@ -285,14 +316,14 @@ class RuntimeService:
             })
             return {"queued": [], "failed": [], "total_queued": 0}
 
-        needed = max(0, _DEFAULT_QUEUE_TARGET - len(self.station_state.queue))
+        needed = max(0, _DEFAULT_QUEUE_TARGET - self._queued_music_count())
         if needed <= 0:
             await self.broadcast("provider.request", {
                 "provider": self.music_provider.key,
                 "action": "queue_refill.skipped",
                 "reason": "queue_full",
                 "trigger": reason,
-                "queue_size": len(self.station_state.queue),
+                "queue_size": self._queued_music_count(),
             })
             return {"queued": [], "failed": [], "total_queued": 0}
 
@@ -320,7 +351,7 @@ class RuntimeService:
             "trigger": reason,
             "queued_count": result["total_queued"],
             "failed": result["failed"],
-            "queue_size": len(self.station_state.queue),
+            "queue_size": self._queued_music_count(),
         })
         return result
 
@@ -329,7 +360,7 @@ class RuntimeService:
         preferences = self.state_store.get_listener_preferences()
         if preferences is None or not preferences.seed_queries:
             return {"queued": [], "failed": [], "total_queued": 0}
-        needed = max(0, _DEFAULT_QUEUE_TARGET - len(self.station_state.queue))
+        needed = max(0, _DEFAULT_QUEUE_TARGET - self._queued_music_count())
         if needed <= 0:
             return {"queued": [], "failed": [], "total_queued": 0}
         await self.broadcast("provider.request", {
@@ -351,7 +382,10 @@ class RuntimeService:
         return result
 
     def _candidate_queries(self, preferences: ListenerPreferences, needed: int) -> list[str]:
-        seen_refs = {self.station_state.now_playing.playback_ref, *(track.playback_ref for track in self.station_state.queue)}
+        seen_refs = {
+            self.station_state.now_playing.playback_ref,
+            *(item.track.playback_ref for item in self.station_state.queue if item.kind == "music" and item.track),
+        }
         chosen: list[str] = []
         for query in preferences.seed_queries:
             normalized = query.strip()
@@ -505,8 +539,9 @@ class RuntimeService:
     def _sync_persisted_play_context(self) -> None:
         if self.station_state.now_playing.track_id != STATION_PLACEHOLDER_TRACK_ID:
             self._record_play_if_new(self.station_state.now_playing)
-        for queued_track in self.station_state.queue:
-            self._record_play_if_new(queued_track)
+        for queued_item in self.station_state.queue:
+            if queued_item.kind == "music" and queued_item.track:
+                self._record_play_if_new(queued_item.track)
 
     def _record_play_if_new(self, track: QueueItem) -> None:
         latest_plays = self.state_store.recent_context(limit=1).plays
@@ -533,7 +568,7 @@ class RuntimeService:
                         duration_ms=segment.duration_ms,
                     )
             elif event_name == "queue.updated":
-                queue = [QueueItem.model_validate(item) for item in payload["queue"]]
+                queue = [ProgramItem.model_validate(item) for item in payload["queue"]]
                 self.station_state = self.station_state.model_copy(update={"queue": queue})
             elif event_name == "station.state.updated":
                 self.station_state = StationState.model_validate(payload)
@@ -541,41 +576,58 @@ class RuntimeService:
             await self.broadcast(event_name, payload)
 
     async def next_track(self) -> dict:
+        while self.station_state.queue and self.station_state.queue[0].kind == "commentary":
+            commentary = self.station_state.queue.pop(0)
+            await self.broadcast("program.commentary.consumed", commentary.model_dump())
         if self.station_state.queue:
             self._previous_tracks.append(self.station_state.now_playing)
-            next_track = self.station_state.queue.pop(0)
+            next_item = self.station_state.queue.pop(0)
+            if next_item.track is None:
+                raise ValueError("music program item missing track")
+            next_track = next_item.track
             if self._listener_priority_count:
                 self._listener_priority_count -= 1
             self.station_state.now_playing = next_track
             self.state_store.record_play(track_id=next_track.track_id, title=next_track.title)
 
-        await self.broadcast("queue.updated", {"queue": [track.model_dump() for track in self.station_state.queue]})
+        self._bump_queue_revision()
+        await self.broadcast("queue.updated", self._queue_payload())
         await self.broadcast("station.state.updated", self.station_state.model_dump())
-        if len(self.station_state.queue) < _DEFAULT_QUEUE_LOW_WATERMARK:
+        if self._queued_music_count() < _DEFAULT_QUEUE_LOW_WATERMARK:
             await self.ensure_queue_seeded(reason="queue_low")
 
         return {
             "accepted": True,
             "now_playing": self.station_state.now_playing.model_dump(),
-            "queue": [track.model_dump() for track in self.station_state.queue],
+            "queue": self._queue_payload()["queue"],
         }
 
-    async def queue_track(self, track: QueueItem, *, listener_priority: bool = False) -> dict:
+    async def queue_track(
+        self,
+        track: QueueItem,
+        *,
+        listener_priority: bool = False,
+        origin: str = "dj",
+        reason: str = "Station programming",
+    ) -> dict:
+        item = ProgramItem.music(track, origin=origin, reason=reason)
         if listener_priority:
             # Consecutive “Queue next” clicks remain in click order directly
             # after the current item, ahead of autonomous DJ programming.
-            self.station_state.queue.insert(self._listener_priority_count, track)
+            self.station_state.queue.insert(self._listener_priority_count, item)
             self._listener_priority_count += 1
         else:
-            self.station_state.queue.insert(0, track)
+            self.station_state.queue.insert(0, item)
         self._record_play_if_new(track)
 
-        queue_payload = {"queue": [item.model_dump() for item in self.station_state.queue]}
+        self._bump_queue_revision()
+        queue_payload = self._queue_payload()
         await self.broadcast("queue.updated", queue_payload)
         await self.broadcast("station.state.updated", self.station_state.model_dump())
 
         return {
             "accepted": True,
+            "revision": queue_payload["revision"],
             "queue": queue_payload["queue"],
         }
 
@@ -590,6 +642,20 @@ class RuntimeService:
         self._candidates[resolved.playback_ref] = resolved
         return resolved
 
+    def _queued_music_count(self) -> int:
+        return sum(1 for item in self.station_state.queue if item.kind == "music")
+
+    def _queue_payload(self) -> dict:
+        return {
+            "revision": self.station_state.queue_revision,
+            "queue": [item.model_dump(mode="json") for item in self.station_state.queue],
+        }
+
+    def _bump_queue_revision(self) -> None:
+        self.station_state = self.station_state.model_copy(
+            update={"queue_revision": self.station_state.queue_revision + 1}
+        )
+
     async def queue_soundcloud_embed(self, url: str) -> dict:
         provider_track = await self.soundcloud_provider.resolve_embed_url(url)
         return await self.queue_track(provider_track.to_queue_item())
@@ -597,17 +663,20 @@ class RuntimeService:
     async def previous_track(self) -> dict:
         if self._previous_tracks:
             previous = self._previous_tracks.pop()
-            self.station_state.queue.insert(0, self.station_state.now_playing)
+            self.station_state.queue.insert(0, ProgramItem.music(
+                self.station_state.now_playing, origin="listener", reason="Previous track"
+            ))
             self.station_state.now_playing = previous
             self.state_store.record_play(track_id=previous.track_id, title=previous.title)
 
-        await self.broadcast("queue.updated", {"queue": [track.model_dump() for track in self.station_state.queue]})
+        self._bump_queue_revision()
+        await self.broadcast("queue.updated", self._queue_payload())
         await self.broadcast("station.state.updated", self.station_state.model_dump())
 
         return {
             "accepted": True,
             "now_playing": self.station_state.now_playing.model_dump(),
-            "queue": [track.model_dump() for track in self.station_state.queue],
+            "queue": self._queue_payload()["queue"],
         }
 
     async def play(self) -> TransportActionResponse:

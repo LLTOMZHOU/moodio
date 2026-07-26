@@ -14,6 +14,7 @@ from starlette.exceptions import HTTPException
 from moodio.api.schemas import (
     CommandRequest,
     CandidateActionRequest,
+    CommentaryRequest,
     FavoriteRequest,
     PlaybackEventRequest,
     MusicSearchRequest,
@@ -114,11 +115,27 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
             request.candidate_id,
             request.reason,
             listener_priority=True,
+            expected_revision=request.expected_revision,
         )
 
     @app.post("/api/music/play-now")
     async def post_music_play_now(request: CandidateActionRequest) -> dict:
         return await runtime_control(runtime).play_now(request.candidate_id, request.reason)
+
+    @app.post("/api/program/commentary")
+    async def post_program_commentary(request: CommentaryRequest) -> dict:
+        runtime: RuntimeService = app.state.runtime
+        return await runtime_control(runtime).queue_commentary(
+            request.text,
+            request.reason,
+            expected_revision=request.expected_revision,
+            for_music_item_id=request.for_music_item_id,
+        )
+
+    @app.delete("/api/program/{program_item_id}")
+    async def delete_program_item(program_item_id: str) -> dict:
+        runtime: RuntimeService = app.state.runtime
+        return await runtime_control(runtime).remove_from_queue(program_item_id)
 
     @app.get("/api/music/stream/{track_ref:path}")
     async def get_music_stream(track_ref: str, request: Request) -> StreamingResponse:

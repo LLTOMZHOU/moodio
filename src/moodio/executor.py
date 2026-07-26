@@ -4,7 +4,7 @@ from typing import Any
 
 from moodio.api.schemas import FinalAction, QueueTrackAction, StreamEvent
 from moodio.domain.events import RuntimeEvent
-from moodio.domain.models import QueueItem, STATION_PLACEHOLDER_TRACK_ID, StationState, TranscriptSegment
+from moodio.domain.models import ProgramItem, QueueItem, STATION_PLACEHOLDER_TRACK_ID, StationState, TranscriptSegment
 
 
 _DEFAULT_NOW_PLAYING = {
@@ -31,11 +31,18 @@ def _queue_item_payload(track: QueueTrackAction) -> dict[str, Any]:
     }
 
 
-def _queue_items(queue_tracks: list[QueueTrackAction]) -> list[QueueItem]:
-    return [QueueItem.model_validate(_queue_item_payload(track)) for track in queue_tracks]
+def _queue_items(queue_tracks: list[QueueTrackAction]) -> list[ProgramItem]:
+    return [
+        ProgramItem.music(
+            QueueItem.model_validate(_queue_item_payload(track)),
+            origin="dj",
+            reason=track.reason,
+        )
+        for track in queue_tracks
+    ]
 
 
-def _station_state(action: FinalAction, queue: list[QueueItem], *, is_speaking: bool) -> StationState:
+def _station_state(action: FinalAction, queue: list[ProgramItem], *, is_speaking: bool) -> StationState:
     return StationState.model_validate(
         {
             "host_name": "moodio",

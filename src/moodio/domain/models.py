@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import uuid
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 STATION_PLACEHOLDER_TRACK_ID = "moodio:track:current"
 
@@ -37,6 +38,57 @@ class NowPlaying(QueueItem):
     pass
 
 
+ProgramItemKind = Literal["music", "commentary"]
+ProgramItemOrigin = Literal["listener", "dj", "scheduler"]
+ProgramItemStatus = Literal["queued", "current", "played", "skipped", "unavailable"]
+
+
+class ProgramItem(BaseModel):
+    """One ordered station-program entry, either music or optional commentary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    program_item_id: str = Field(default_factory=lambda: f"pi_{uuid.uuid4().hex[:12]}")
+    kind: ProgramItemKind
+    origin: ProgramItemOrigin
+    reason: str = Field(min_length=1, max_length=400)
+    status: ProgramItemStatus = "queued"
+    track: QueueItem | None = None
+    text: str | None = Field(default=None, max_length=1_500)
+    for_music_item_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "ProgramItem":
+        if self.kind == "music" and self.track is None:
+            raise ValueError("music program items require a track")
+        if self.kind == "commentary" and not (self.text or "").strip():
+            raise ValueError("commentary program items require text")
+        if self.kind == "commentary" and self.track is not None:
+            raise ValueError("commentary program items cannot include a track")
+        return self
+
+    @classmethod
+    def music(cls, track: QueueItem, *, origin: ProgramItemOrigin, reason: str) -> "ProgramItem":
+        return cls(kind="music", origin=origin, reason=reason, track=track)
+
+    @classmethod
+    def commentary(
+        cls,
+        text: str,
+        *,
+        origin: ProgramItemOrigin,
+        reason: str,
+        for_music_item_id: str | None = None,
+    ) -> "ProgramItem":
+        return cls(
+            kind="commentary",
+            origin=origin,
+            reason=reason,
+            text=text,
+            for_music_item_id=for_music_item_id,
+        )
+
+
 class TranscriptSegment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -65,5 +117,6 @@ class StationState(BaseModel):
     status: StationStatus
     talk_density: TalkDensity
     now_playing: NowPlaying
-    queue: list[QueueItem]
+    queue: list[ProgramItem]
+    queue_revision: int = Field(default=0, ge=0)
     favorites_enabled: bool

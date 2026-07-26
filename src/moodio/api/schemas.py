@@ -39,6 +39,16 @@ class CandidateActionRequest(BaseModel):
 
     candidate_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] = "Listener selection"
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class CommentaryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1_500)]
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    expected_revision: int = Field(ge=0)
+    for_music_item_id: str | None = None
 
 
 class PreferenceImportRequest(BaseModel):

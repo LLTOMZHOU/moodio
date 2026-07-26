@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
+from datetime import datetime, timedelta, timezone
 from moodio.api.schemas import FavoriteRequest
-from moodio.domain.models import QueueItem
+from moodio.domain.models import ProgramItem, QueueItem
 from moodio.music.soundcloud import SoundCloudProvider, is_individual_track_url
 from moodio.music.providers import DiscoveryPreferences
+from moodio.runtime.tasks import StationTask
 
 if TYPE_CHECKING:
     from moodio.runtime.service import RuntimeService
@@ -31,7 +33,11 @@ class StationControl:
         }
 
     async def get_queue(self) -> dict:
-        return {"queue": [track.model_dump() for track in self.runtime.station_state.queue]}
+        return {
+            **self.runtime._queue_payload(),
+            "current_item": self.runtime.station_state.now_playing.model_dump(),
+            "playback_status": self.runtime.station_state.status,
+        }
 
     async def get_transcript(self) -> dict:
         return self.runtime.transcript_snapshot()
@@ -54,6 +60,39 @@ class StationControl:
         payload = {"reason": reason, "path": "listener-profile.md"}
         await self.runtime.broadcast("profile.updated", payload)
         return payload
+
+    async def schedule_station_task(self, instruction: str, run_at_or_recurrence: str) -> dict:
+        next_run_at, recurrence_seconds = _parse_schedule(run_at_or_recurrence)
+        task = StationTask(
+            instruction=instruction,
+            next_run_at=next_run_at,
+            recurrence_seconds=recurrence_seconds,
+        )
+        tasks = self.runtime.task_store.list()
+        tasks.append(task)
+        self.runtime.task_store.save(tasks)
+        payload = task.model_dump(mode="json")
+        await self.runtime.broadcast("task.scheduled", payload)
+        return payload
+
+    async def list_station_tasks(self) -> dict:
+        return {"tasks": [task.model_dump(mode="json") for task in self.runtime.task_store.list()]}
+
+    async def cancel_station_task(self, task_id: str) -> dict:
+        tasks = self.runtime.task_store.list()
+        found = False
+        updated = []
+        for task in tasks:
+            if task.task_id == task_id:
+                found = True
+                updated.append(task.model_copy(update={"enabled": False}))
+            else:
+                updated.append(task)
+        if not found:
+            raise ValueError("station task does not exist")
+        self.runtime.task_store.save(updated)
+        await self.runtime.broadcast("task.cancelled", {"task_id": task_id})
+        return {"task_id": task_id, "cancelled": True}
 
     async def web_search(self, query: str, limit: int = 5) -> dict:
         bounded_limit = max(1, min(limit, 10))
@@ -120,10 +159,98 @@ class StationControl:
         reason: str = "Station programming",
         *,
         listener_priority: bool = False,
+        expected_revision: int | None = None,
     ) -> dict:
+        if expected_revision is not None and expected_revision != self.runtime.station_state.queue_revision:
+            return self._stale_queue_result()
         track = await self.runtime.resolve_candidate(candidate_id)
-        result = await self.runtime.queue_track(track.to_queue_item(), listener_priority=listener_priority)
+        result = await self.runtime.queue_track(
+            track.to_queue_item(),
+            listener_priority=listener_priority,
+            origin="listener" if listener_priority else "dj",
+            reason=reason,
+        )
         return {**result, "track": track.model_dump(mode="json"), "reason": reason}
+
+    async def queue_commentary(
+        self,
+        text: str,
+        reason: str,
+        *,
+        expected_revision: int,
+        for_music_item_id: str | None = None,
+    ) -> dict:
+        if expected_revision != self.runtime.station_state.queue_revision:
+            return self._stale_queue_result()
+        if for_music_item_id is not None and not any(
+            item.program_item_id == for_music_item_id and item.kind == "music"
+            for item in self.runtime.station_state.queue
+        ):
+            raise ValueError("anchored commentary must target an upcoming music item")
+        commentary = ProgramItem.commentary(
+            text,
+            origin="dj",
+            reason=reason,
+            for_music_item_id=for_music_item_id,
+        )
+        if for_music_item_id is None:
+            # General commentary must lead into some music, never become the tail.
+            music_positions = [
+                index for index, item in enumerate(self.runtime.station_state.queue) if item.kind == "music"
+            ]
+            if not music_positions:
+                raise ValueError("commentary requires an upcoming music item")
+            insert_at = music_positions[-1]
+        else:
+            insert_at = next(
+                index for index, item in enumerate(self.runtime.station_state.queue)
+                if item.program_item_id == for_music_item_id
+            )
+        self.runtime.station_state.queue.insert(insert_at, commentary)
+        self.runtime._bump_queue_revision()
+        payload = self.runtime._queue_payload()
+        await self.runtime.broadcast("queue.updated", payload)
+        await self.runtime.broadcast("station.state.updated", self.runtime.station_state.model_dump())
+        return {"accepted": True, **payload, "program_item": commentary.model_dump(mode="json")}
+
+    async def remove_from_queue(self, program_item_id: str) -> dict:
+        queue = self.runtime.station_state.queue
+        target = next((item for item in queue if item.program_item_id == program_item_id), None)
+        if target is None:
+            raise ValueError("program item is not queued")
+        removed_ids = {target.program_item_id}
+        if target.kind == "music":
+            removed_ids.update(
+                item.program_item_id for item in queue if item.for_music_item_id == target.program_item_id
+            )
+        self.runtime.station_state.queue[:] = [item for item in queue if item.program_item_id not in removed_ids]
+        self.runtime._bump_queue_revision()
+        payload = self.runtime._queue_payload()
+        await self.runtime.broadcast("queue.updated", payload)
+        await self.runtime.broadcast("station.state.updated", self.runtime.station_state.model_dump())
+        return {"accepted": True, "removed": sorted(removed_ids), **payload}
+
+    def _stale_queue_result(self) -> dict:
+        return {
+            "accepted": False,
+            "error": "stale_queue_revision",
+            "revision": self.runtime.station_state.queue_revision,
+        }
+
+
+def _parse_schedule(value: str) -> tuple[datetime, int | None]:
+    normalized = value.strip().lower()
+    now = datetime.now(timezone.utc)
+    if normalized.startswith("every ") and normalized.endswith(" hours"):
+        hours = int(normalized.removeprefix("every ").removesuffix(" hours").strip())
+        return now + timedelta(hours=hours), hours * 3600
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("schedule must be an ISO timestamp or 'every N hours'") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc), None
 
     async def play_now(self, candidate_id: str, reason: str = "Listener selection") -> dict:
         # Resolve first: an unavailable result must not disturb current playback.

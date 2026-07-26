@@ -184,14 +184,49 @@ def build_station_tools(control: StationControl) -> list:
         return await control.inspect_candidates(candidate_ids)
 
     @function_tool
-    async def queue_music(candidate_id: str, reason: str) -> dict:
+    async def queue_music(candidate_id: str, reason: str, based_on_queue_revision: int) -> dict:
         """Queue a previously searched candidate. Inspect candidates and get_queue before programming the station."""
-        return await control.queue_music(candidate_id, reason)
+        return await control.queue_music(candidate_id, reason, expected_revision=based_on_queue_revision)
+
+    @function_tool
+    async def queue_commentary(
+        text: str,
+        reason: str,
+        based_on_queue_revision: int,
+        for_music_item_id: str | None = None,
+    ) -> dict:
+        """Queue sparse editorial commentary for a natural transition after inspecting the queue."""
+        return await control.queue_commentary(
+            text,
+            reason,
+            expected_revision=based_on_queue_revision,
+            for_music_item_id=for_music_item_id,
+        )
 
     @function_tool
     async def play_now(candidate_id: str, reason: str) -> dict:
         """Resolve and play a previously searched candidate immediately. Use only for an explicit Listener request."""
         return await control.play_now(candidate_id, reason)
+
+    @function_tool
+    async def remove_from_queue(program_item_id: str) -> dict:
+        """Remove an upcoming program item; anchored commentary follows its music target."""
+        return await control.remove_from_queue(program_item_id)
+
+    @function_tool
+    async def schedule_station_task(instruction: str, run_at_or_recurrence: str) -> dict:
+        """Schedule a plain-language follow-up at an ISO timestamp or with 'every N hours'."""
+        return await control.schedule_station_task(instruction, run_at_or_recurrence)
+
+    @function_tool
+    async def list_station_tasks() -> dict:
+        """List visible persisted DJ follow-ups."""
+        return await control.list_station_tasks()
+
+    @function_tool
+    async def cancel_station_task(task_id: str) -> dict:
+        """Cancel a persisted station follow-up."""
+        return await control.cancel_station_task(task_id)
 
     @function_tool
     async def next_track() -> dict:
@@ -243,7 +278,12 @@ def build_station_tools(control: StationControl) -> list:
         search_music,
         inspect_candidates,
         queue_music,
+        queue_commentary,
         play_now,
+        remove_from_queue,
+        schedule_station_task,
+        list_station_tasks,
+        cancel_station_task,
         next_track,
         previous_track,
         play,

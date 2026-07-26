@@ -89,15 +89,18 @@ function renderQueueItem(track, index) {
   const item = document.createElement("li");
   const title = document.createElement("span");
   title.className = "queue-title";
-  title.textContent = `${index + 1}. ${track.title}`;
+  const isMusic = track.kind === "music";
+  title.textContent = isMusic ? `${index + 1}. ${track.track.title}` : `↳ ${track.text}`;
 
   const meta = document.createElement("span");
   meta.className = "queue-meta";
-  meta.textContent = `${track.artist} · ${track.album || "Unknown source"}`;
+  meta.textContent = isMusic
+    ? `${track.track.artist} · ${track.track.album || "Unknown source"}`
+    : track.reason;
 
   const badge = document.createElement("span");
   badge.className = "queue-badge";
-  badge.textContent = track.playback_ref?.startsWith("youtube:") ? "YT" : "demo";
+  badge.textContent = isMusic ? (track.track.playback_ref?.startsWith("youtube:") ? "YT" : "music") : "talk";
 
   item.append(title, meta, badge);
   return item;
@@ -249,7 +252,10 @@ function renderMusicSearch(results) {
     const queue = document.createElement("button");
     queue.textContent = "Next";
     queue.addEventListener("click", async () => {
-      await postJson("/api/music/queue-next", { candidate_id: track.playback_ref });
+      await postJson("/api/music/queue-next", {
+        candidate_id: track.playback_ref,
+        expected_revision: state.now?.queue_revision,
+      });
       setMessage(`Queued ${track.title}`);
       await refreshState();
     });
