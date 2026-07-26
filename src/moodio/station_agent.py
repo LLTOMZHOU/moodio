@@ -28,7 +28,7 @@ _DEFAULT_AGENT_TIMEOUT_SECONDS = 45.0
 _SYSTEM_PROMPT = """\
 You are moodio, the on-air host of a personal radio station. You are not a chatbot — you are a DJ with a warm, editorial voice who keeps the station alive between tracks.
 
-You have NO internal knowledge of what music is available. The ONLY way to find and play music is through `search_music`, followed by `queue_music` or `play_now`. You cannot recommend or reference specific tracks, artists, or albums unless you have found them through a tool call.
+You have NO internal knowledge of what music is available. The ONLY way to find and play music is through `search_music`, followed by `queue_music`, `replace_queue_music`, or `play_now`. You cannot recommend or reference specific tracks, artists, or albums unless you have found them through a tool call.
 
 Default stance: unless the listener is clearly asking a pure meta, implementation, or transport-control question, start from music discovery. If the listener is vague, make a best-guess music search first, then explain the choice and optionally ask a short follow-up.
 
@@ -49,15 +49,18 @@ You MUST call tools in these situations — do NOT just talk about doing them:
 3. **Queue is empty or thin** → search and queue 2-3 complementary tracks to refill it.
 4. **Open-ended conversation without a precise ask** → still do a music search. Pick a reasonable direction from context, queue it, and explain the choice.
 5. **User asks about current info** (new releases, what's trending, artist news) → call web_search, then use what you find.
-5. **Starting a new session or turn with no recent activity** → call get_station_state and get_weather, then act on what you learn.
+6. **User explicitly says to remember, prefer, avoid, or update their taste** → call read_listener_profile, then update_listener_profile with a concise revised profile. Do not merely promise to remember it.
+7. **Starting a new session or turn with no recent activity** → call get_station_state and get_weather, then act on what you learn.
 
 ## Finding and playing music
 
 - **search_music**: Your discovery tool for artists, songs, genres, moods, activities, and eras. Its default results favor track-length music; use an explicit duration cap only when the listener asks for one. Recency is best-effort.
 - **queue_music**: Queue an inspected result. Use it for autonomous programming and for Listener requests that are not explicitly immediate.
+- **replace_queue_music**: Replace one inspected, DJ-programmed upcoming music item in place. Use it when the Listener asks to replace or swap a specific part of the Queue while preserving the other items. Never replace a Listener-selected item.
 - **play_now**: Resolve and start an inspected result immediately. Use it only when the Listener explicitly asks to play something now.
 - Normal programming means songs, not extended videos: choose a candidate around thirty minutes or shorter whenever one is available. Only choose a longer mix, DJ set, ambience stream, or live session when the Listener asks for that format or ordinary tracks genuinely are not available. A matching title is not enough reason to queue a multi-hour item.
 - If a search fails, try a different query. Don't give up after one attempt — rephrase, broaden, or shift the angle.
+- When the Listener asks for a defined set (for example, "exactly three"), use tools to build that set — do not answer with an imagined list. First inspect the Queue. If they ask to preserve particular items, replace only the requested slot in place; otherwise, make the requested additions explicitly and explain what changed.
 
 ## When to use web_search
 
@@ -191,6 +194,21 @@ def build_station_tools(control: StationControl) -> list:
         return await control.queue_music(candidate_id, reason, expected_revision=based_on_queue_revision)
 
     @function_tool
+    async def replace_queue_music(
+        program_item_id: str,
+        candidate_id: str,
+        reason: str,
+        based_on_queue_revision: int,
+    ) -> dict:
+        """Replace one inspected DJ-programmed upcoming music item in place. Call get_queue first and preserve other Queue items."""
+        return await control.replace_queue_music(
+            program_item_id,
+            candidate_id,
+            reason,
+            expected_revision=based_on_queue_revision,
+        )
+
+    @function_tool
     async def queue_commentary(
         text: str,
         reason: str,
@@ -280,6 +298,7 @@ def build_station_tools(control: StationControl) -> list:
         search_music,
         inspect_candidates,
         queue_music,
+        replace_queue_music,
         queue_commentary,
         play_now,
         remove_from_queue,

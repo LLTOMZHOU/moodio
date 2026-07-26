@@ -151,6 +151,14 @@ function appendStreamDelta(delta) {
   renderChat();
 }
 
+function resetStreamMessage() {
+  if (!state.streamingMessage) return;
+  const index = state.chatMessages.indexOf(state.streamingMessage);
+  if (index >= 0) state.chatMessages.splice(index, 1);
+  state.streamingMessage = null;
+  renderChat();
+}
+
 function renderChat() {
   const container = byId("chat-messages");
   container.innerHTML = "";
@@ -224,8 +232,9 @@ function connectEvents() {
     }
     if (message.event === "queue.updated") refreshState();
     if (message.event === "agent.response.delta") appendStreamDelta(message.payload.delta);
+    if (message.event === "agent.response.reset") resetStreamMessage();
   };
-  ["station.state.updated", "tts.segment.started", "tts.audio.ready", "tts.audio.failed", "queue.updated", "agent.response.delta"].forEach((name) => {
+  ["station.state.updated", "tts.segment.started", "tts.audio.ready", "tts.audio.failed", "queue.updated", "agent.response.delta", "agent.response.reset"].forEach((name) => {
     events.addEventListener(name, handleMessage);
   });
   events.addEventListener("error", () => setMessage("reconnecting live updates…"));

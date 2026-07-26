@@ -230,6 +230,56 @@ class StationControl:
         await self.runtime.broadcast("station.state.updated", self.runtime.station_state.model_dump())
         return {"accepted": True, "removed": sorted(removed_ids), **payload}
 
+    async def replace_queue_music(
+        self,
+        program_item_id: str,
+        candidate_id: str,
+        reason: str,
+        *,
+        expected_revision: int,
+    ) -> dict:
+        """Replace one DJ-programmed upcoming music item without disturbing its position.
+
+        The program-item id intentionally remains stable. Any commentary anchored to the
+        item therefore stays with the slot the DJ is revising rather than becoming a
+        stray transition elsewhere in the queue.
+        """
+        if expected_revision != self.runtime.station_state.queue_revision:
+            return self._stale_queue_result()
+
+        queue = self.runtime.station_state.queue
+        target_index = next(
+            (index for index, item in enumerate(queue) if item.program_item_id == program_item_id),
+            None,
+        )
+        if target_index is None:
+            raise ValueError("program item is not queued")
+        target = queue[target_index]
+        if target.kind != "music":
+            raise ValueError("only upcoming music items can be replaced")
+        if target.origin == "listener":
+            raise ValueError("the DJ cannot replace a Listener-selected music item")
+
+        track = await self.runtime.resolve_candidate(candidate_id)
+        replacement = target.model_copy(update={
+            "track": track.to_queue_item(),
+            "origin": "dj",
+            "reason": reason,
+        })
+        queue[target_index] = replacement
+        self.runtime._record_play_if_new(track.to_queue_item())
+        self.runtime._bump_queue_revision()
+        payload = self.runtime._queue_payload()
+        await self.runtime.broadcast("queue.updated", payload)
+        await self.runtime.broadcast("station.state.updated", self.runtime.station_state.model_dump())
+        return {
+            "accepted": True,
+            "replaced_program_item_id": program_item_id,
+            "program_item": replacement.model_dump(mode="json"),
+            "track": track.model_dump(mode="json"),
+            **payload,
+        }
+
     def _stale_queue_result(self) -> dict:
         return {
             "accepted": False,

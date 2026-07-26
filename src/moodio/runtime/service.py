@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -82,6 +84,49 @@ _FEED_EVENT_PREFIXES = (
     "provider.error",
     "agent.turn.",
 )
+
+
+@dataclass(frozen=True)
+class _TurnRequirements:
+    """Small harness checks for explicit Listener requests that must cause a mutation."""
+
+    requires_queue_mutation: bool = False
+    requires_profile_update: bool = False
+
+    @property
+    def has_requirements(self) -> bool:
+        return self.requires_queue_mutation or self.requires_profile_update
+
+
+def _turn_requirements(text: str) -> _TurnRequirements:
+    normalized = " ".join(text.lower().split())
+    requires_queue_mutation = bool(re.search(
+        r"\b(?:queue|curate|program|line up|add|put on|replace|swap)\b",
+        normalized,
+    )) or bool(re.search(r"\bplay (?:me |some |the |a |an )", normalized))
+    requires_profile_update = bool(re.search(
+        r"\b(?:remember|preference(?:s)?|listener profile|taste note|always|never)\b",
+        normalized,
+    ))
+    return _TurnRequirements(
+        requires_queue_mutation=requires_queue_mutation,
+        requires_profile_update=requires_profile_update,
+    )
+
+
+def _correction_instruction(requirements: _TurnRequirements) -> str:
+    missing: list[str] = []
+    if requirements.requires_queue_mutation:
+        missing.append(
+            "The Listener explicitly asked you to program music, but no Queue mutation was confirmed. "
+            "Use the music tools now. Do not describe a proposed set without actually queueing, playing, or replacing it."
+        )
+    if requirements.requires_profile_update:
+        missing.append(
+            "The Listener explicitly asked for a durable preference. Read the Listener profile and call "
+            "update_listener_profile now with a concise revision; do not merely say you will remember it."
+        )
+    return "[Station execution correction — act before replying]\n" + "\n".join(missing)
 
 
 def _seed_now_playing() -> QueueItem:
@@ -483,6 +528,9 @@ class RuntimeService:
 
     async def accept_command(self, request: CommandRequest) -> AcceptedResponse:
         self.state_store.record_command(request.text)
+        requirements = _turn_requirements(request.text)
+        queue_revision_before_turn = self.station_state.queue_revision
+        profile_before_turn = self._listener_profile_text()
 
         trigger = UserCommandTrigger(text=request.text)
         mode = route_trigger(
@@ -511,6 +559,34 @@ class RuntimeService:
             })
             raise
 
+        missing_requirements = _TurnRequirements(
+            requires_queue_mutation=(
+                requirements.requires_queue_mutation
+                and self.station_state.queue_revision == queue_revision_before_turn
+            ),
+            requires_profile_update=(
+                requirements.requires_profile_update
+                and self._listener_profile_text() == profile_before_turn
+            ),
+        )
+        if missing_requirements.has_requirements:
+            await self.broadcast("agent.turn.correcting", {
+                "missing_queue_mutation": missing_requirements.requires_queue_mutation,
+                "missing_profile_update": missing_requirements.requires_profile_update,
+            })
+            # The first pass can only have narrated an action. Remove that provisional
+            # streamed copy before the corrective pass becomes the visible response.
+            await self.broadcast("agent.response.reset", {})
+            try:
+                agent_message = await self._run_agent_streaming(_correction_instruction(missing_requirements))
+            except Exception as exc:
+                await self.broadcast("agent.turn.failed", {
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                    "phase": "correction",
+                })
+                raise
+
         await self._apply_agent_message(agent_message)
         self._sync_persisted_play_context()
 
@@ -522,6 +598,13 @@ class RuntimeService:
         })
 
         return AcceptedResponse(accepted=True, kind="natural_language", text=request.text)
+
+    def _listener_profile_text(self) -> str:
+        profile_path = self.station_dir / "listener-profile.md"
+        if profile_path.exists():
+            return profile_path.read_text(encoding="utf-8").strip()
+        preferences = self.state_store.get_listener_preferences()
+        return preferences.raw_text.strip() if preferences else ""
 
     async def _apply_agent_message(self, text: str) -> None:
         if not text:
