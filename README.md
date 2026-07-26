@@ -140,23 +140,23 @@ When `OPENROUTER_API_KEY` is set, the station agent uses the OpenAI Agents SDK w
 
 ## Operator CLI
 
-The local package installs a `moodio` command for operating the *running* local Station. These commands call the same server and inspect the same in-memory Queue as the browser; they never construct a second station runtime.
+The local package exposes a `moodio` command for operating the *running* local Station. During development, use `uv run moodio …` (or activate `.venv`) so the command resolves from this checkout. These commands call the same server and inspect the same in-memory Queue as the browser; they never construct a second station runtime.
 
 ```bash
-moodio serve --host 127.0.0.1 --port 8765
+uv run moodio serve --host 127.0.0.1 --port 8765
 
 # Inspect and repair a live station.
-moodio inspect
-moodio now
-moodio transcript
-moodio feed --limit 50
-moodio trace --limit 100
-moodio session --limit 100
-moodio tail --filter agent --json
+uv run moodio inspect
+uv run moodio now
+uv run moodio transcript
+uv run moodio feed --limit 50
+uv run moodio trace --limit 100
+uv run moodio session --limit 100
+uv run moodio tail --filter agent --json
 
 # Act on that same station.
-moodio command "play something warmer"
-moodio transcribe ./command.wav
+uv run moodio command "play something warmer"
+uv run moodio transcribe ./command.wav
 ```
 
 `trace` is the raw persisted event stream, including tool activity and response deltas. `session` shows the persisted Agents SDK conversation items. Both are intentionally local operator surfaces.
