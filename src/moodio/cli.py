@@ -110,6 +110,8 @@ async def _run_async(
             },
             stdout,
         )
+    elif args.command_name == "preferences_apple_music_import":
+        _print_json(await runtime.import_apple_music_export(args.xml_file.read_bytes()), stdout)
     else:
         raise ValueError(f"unsupported command: {args.command_name}")
 
@@ -332,6 +334,13 @@ def _parser() -> argparse.ArgumentParser:
     preference_import.add_argument("profile_file", type=Path)
     preference_import.add_argument("--source", default="apple_music")
     preference_import.set_defaults(command_name="preferences_import")
+
+    apple_music_import = preference_subcommands.add_parser(
+        "import-apple-music",
+        help="Import a Music.app XML playlist or library export without retaining the XML",
+    )
+    apple_music_import.add_argument("xml_file", type=Path)
+    apple_music_import.set_defaults(command_name="preferences_apple_music_import")
 
     return parser
 

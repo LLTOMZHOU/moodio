@@ -336,6 +336,28 @@ byId("music-search-form").addEventListener("submit", async (event) => {
   } catch (error) { setMessage(error.message); }
 });
 
+byId("apple-music-import-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const file = byId("apple-music-import-file").files?.[0];
+  if (!file) return;
+  try {
+    setMessage("Importing taste signals and finding a few opening tracks…");
+    const response = await fetch("/api/preferences/apple-music-xml", {
+      method: "POST",
+      headers: { "content-type": file.type || "application/xml" },
+      body: file,
+    });
+    if (!response.ok) throw new Error((await response.json()).detail || "Apple Music import failed");
+    const result = await response.json();
+    const queued = result.queue?.total_queued || 0;
+    setMessage(`Imported ${result.import.track_count} tracks and queued ${queued} opening picks.`);
+    event.target.reset();
+    await refreshState();
+  } catch (error) {
+    setMessage(error.message);
+  }
+});
+
 const musicAudio = byId("music-audio");
 musicAudio.addEventListener("ended", async () => {
   if (!state.now?.now_playing) return;

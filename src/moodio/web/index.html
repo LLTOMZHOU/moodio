@@ -78,6 +78,15 @@
 
           <aside class="control-stack">
             <article class="control-card">
+              <p class="eyebrow">bring your taste</p>
+              <form id="apple-music-import-form" class="import-form">
+                <label class="file-picker" for="apple-music-import-file">Apple Music XML</label>
+                <input id="apple-music-import-file" type="file" accept=".xml,application/xml,text/xml" required />
+                <button type="submit">Import</button>
+              </form>
+              <p class="hint">In Music on Mac: File → Library → Export Playlist → XML. Moodio keeps only a small taste summary, not the file or music.</p>
+            </article>
+            <article class="control-card">
               <p class="eyebrow">find music</p>
               <form id="music-search-form" class="chat-input-row">
                 <input id="music-search-input" placeholder="Artist, song, genre, or mood" autocomplete="off" />

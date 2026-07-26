@@ -239,6 +239,8 @@ It owns:
 
 The initial profile may be one editable Markdown document or a small JSON object with sections such as `instructions`, `taste_notes`, and `recent_signals`. It is not a preference graph, scoring system, or strict taxonomy. The runtime owns its location and audit trail; the DJ receives scoped read/update tools, never a generic filesystem tool. A profile update applies automatically and produces an inspectable revision; it does not require approval or a notification. Automatic updates retain a one-sentence reason in revision/event metadata, so the editable profile stays uncluttered while the UI can show the reason beside its diff. The runtime may preserve useful recent activity separately, but should only promote it into the profile when a simple explanation would make sense to the Listener.
 
+On a new Station, the UI may offer a local Apple Music XML playlist or library import as a bootstrap, never as an audio source. The Listener chooses the export in Music.app; Moodio derives a provisional profile note and a small set of seed queries, then finds and validates a few candidates through the normal provider before queueing them. It retains the derived profile and compact import summary, not the XML or Music.app's private library database. A connected MusicKit path remains an optional future import adapter with the same derived-taste contract.
+
 ### Research module
 
 This module catches up on relevant real-world music context, initially through bounded web or feed research.

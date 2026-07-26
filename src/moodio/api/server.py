@@ -176,6 +176,20 @@ def create_app(runtime: RuntimeService | None = None) -> FastAPI:
             "seed_queries": preferences.seed_queries,
         }
 
+    @app.post("/api/preferences/apple-music-xml")
+    async def post_apple_music_xml_import(request: Request) -> dict:
+        """Import a Listener-selected Music.app XML export; never retain the source file."""
+        content = await request.body()
+        if not content:
+            raise HTTPException(status_code=422, detail="Choose an Apple Music XML export first.")
+        if len(content) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Apple Music XML export is too large (20 MB limit).")
+        runtime: RuntimeService = app.state.runtime
+        try:
+            return await runtime.import_apple_music_export(content)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.post("/api/events/playback", status_code=202)
     async def post_playback_event(request: PlaybackEventRequest) -> dict:
         runtime: RuntimeService = app.state.runtime

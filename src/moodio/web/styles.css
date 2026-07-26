@@ -209,6 +209,27 @@ h3 {
   padding: 17px;
 }
 
+.import-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.import-form input[type="file"] {
+  grid-column: 1 / -1;
+  max-width: 100%;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+}
+
+.file-picker {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .panel-header {
   display: flex;
   align-items: flex-start;

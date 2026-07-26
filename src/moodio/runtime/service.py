@@ -31,6 +31,7 @@ from moodio.info import (
     WeatherProvider,
     WebSearchProvider,
 )
+from moodio.imports.apple_music import import_apple_music_xml
 from moodio.music.providers import MusicProvider, ProviderTrack
 from moodio.music.soundcloud import SoundCloudProvider
 from moodio.music.youtube import YouTubeProvider
@@ -312,7 +313,30 @@ class RuntimeService:
         (self.station_dir / "listener-profile.md").write_text(profile_text.strip() + "\n", encoding="utf-8")
         return preferences
 
-    async def ensure_queue_seeded(self, *, reason: str) -> dict:
+    async def import_apple_music_export(self, content: bytes) -> dict:
+        """Apply a Listener-selected Music.app XML export without retaining it."""
+        imported = import_apple_music_xml(content)
+        preferences = ListenerPreferences(
+            source="apple_music_xml",
+            raw_text=imported.profile_text,
+            seed_queries=imported.seed_queries,
+        )
+        self.state_store.save_listener_preferences(preferences)
+        (self.station_dir / "listener-profile.md").write_text(imported.profile_text + "\n", encoding="utf-8")
+        summary = {
+            "source": preferences.source,
+            "track_count": imported.track_count,
+            "playlist_count": imported.playlist_count,
+            "top_artists": imported.top_artists,
+            "top_genres": imported.top_genres,
+            "seed_queries": imported.seed_queries,
+        }
+        await self.broadcast("profile.imported", summary)
+        self._queue_internal_event("profile.imported", summary)
+        queue_result = await self.ensure_queue_seeded(reason="apple_music_import", max_new_items=5)
+        return {"import": summary, "queue": queue_result}
+
+    async def ensure_queue_seeded(self, *, reason: str, max_new_items: int | None = None) -> dict:
         if self._legacy_soundcloud_refill:
             return await self._ensure_legacy_soundcloud_queue_seeded(reason=reason)
         preferences = self.state_store.get_listener_preferences()
@@ -326,6 +350,8 @@ class RuntimeService:
             return {"queued": [], "failed": [], "total_queued": 0}
 
         needed = max(0, _DEFAULT_QUEUE_TARGET - self._queued_music_count())
+        if max_new_items is not None:
+            needed = min(needed, max(0, max_new_items))
         if needed <= 0:
             await self.broadcast("provider.request", {
                 "provider": self.music_provider.key,
