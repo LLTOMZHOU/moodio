@@ -25,13 +25,32 @@ conversation + listening behaviour + live context
 
 The DJ is allowed to have editorial judgment. It should make a coherent next move, explain itself when asked, ease off when the listener wants quiet, and change course immediately when the listener intervenes.
 
+## Experience pillars
+
+### Agentic over time
+
+Moodio can follow an instruction across months, remember a correction, schedule a follow-up, and make bounded station decisions between prompts. It is a persistent DJ with a continuous relationship to one Station—not a one-shot prompt-to-playlist generator.
+
+### Personal by instruction, not prediction
+
+Moodio does not claim to out-recommend Apple Music or Spotify. Providers remain the source of catalogue depth, availability, and recommendation signals. Moodio's personal layer is the Listener's editable instructions, rituals, current explorations, corrections, and revisable taste notes: the intent a recommender cannot reliably expose or obey on its own.
+
+### Contextually programmed
+
+Optional context can shape what is appropriate now: time of day, city, weather, calendar, recent listening, relevant releases, and eventually a coarse local work-mode signal such as deep work or a meeting. Context informs editorial judgment; it does not automatically command the Station. Sensitive local sources are reduced on-device to a minimal signal before the DJ sees them, and each source remains independently controllable by the Listener.
+
+### Shared control
+
+The Listener and DJ operate the same Station. Direct queue and transport actions take effect immediately; the DJ receives them as first-class events and programs around them afterward. Human control is never a chat request waiting on a model.
+
+### A relationship, not a control panel
+
+Moodio has a recognizable editorial voice and enough continuity to feel like a DJ who knows the room. It should speak when it adds value, go quiet when music should carry the moment, and never turn personality into a demand for attention.
+
 ## What makes it different
 
 - **Long-running, not turn-bound.** The station can act when the queue runs low, a track is ending, an hour changes, or a real-world event matters—not only after a chat message.
-- **Personal, but evidence-based.** Explicit instructions, favorites, searches, plays, skips, and conversation all become useful signals. A single accidental skip should not become a permanent taste rule.
-- **Shared control.** Human and agent operate the same queue and transport controls. The DJ sees human actions as first-class events rather than guessing what happened in the player.
 - **Agentic discovery, bounded execution.** The agent can search, compare candidates, and form a musical arc. It may only queue tracks the provider actually returned, through typed station controls.
-- **Contextually curious.** Over time, the DJ can notice new releases by favorite artists, connect a rainy afternoon to a warmer selection, or surface a meaningful music-world update when it is genuinely relevant.
 - **Respectful of the catalog.** Moodio does not download or retain tracks. Playback stays provider-backed and the app stores only the small amount of metadata and listening history needed to run the station.
 
 ## Hero journeys

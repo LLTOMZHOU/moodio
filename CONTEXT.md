@@ -96,6 +96,14 @@ _Avoid_: Controller, player
 The Listener's editable, harness-owned plain-language notepad: their instructions, working taste notes, and recent meaningful signals.
 _Avoid_: Preference graph, taste model
 
+**Context source**:
+An optional, Listener-controlled source of current situational information for a Station, such as time, weather, calendar, or a local work-mode adapter.
+_Avoid_: Surveillance feed, mandatory personalization
+
+**Context signal**:
+A minimal, purpose-specific description produced from a Context source that the DJ may consider while programming, such as `deep_work` or `in_meeting`. It is not a Listener instruction and does not include raw surrounding content.
+_Avoid_: Screen scrape, conversation transcript, command
+
 **Listener instruction**:
 An explicit rule in the Listener profile that the DJ must follow when it applies.
 _Avoid_: Preference, hint
@@ -162,6 +170,9 @@ _Avoid_: Listener selection, Music item
 - Cosmetic controls, such as volume and seek, do not create **Internal Station-event items**.
 - A **Station** uses one editable **Listener profile** as durable context.
 - A **Listener instruction** outranks a **Taste note** when they conflict.
+- A **Context source** is optional and independently enabled or disabled by the Listener.
+- A sensitive local **Context source** is reduced on-device to a minimal **Context signal** before it reaches the DJ; raw screen text, window titles, document contents, and audio never enter the Station session or durable Station records.
+- A **Context signal** may shape a programming decision only when relevant; it never overrides a **Listener instruction** or direct Listener control.
 - The DJ may revise a **Taste note** during any relevant bounded run when it has a concise, revisable explanation; a single favorite, removal, or other isolated action is evidence, not an automatic durable conclusion.
 - Recurring artist-release interest is represented by a simple **Listener profile** note or **Station task**, not a separate followed-artist model in v0.2.
 - A relevant release is ordinary DJ programming: it may append if it fits the Listener and current Queue, but never interrupts or notifies merely because it is new.

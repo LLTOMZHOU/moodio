@@ -26,6 +26,7 @@ This keeps the app personal without turning it into a private music repository o
 - Human controls and agent tools mutate the same station state through the same control module.
 - The agent is long-lived in memory, not an unbounded process: the runtime wakes it for bounded, observable runs.
 - Explicit listener instructions outrank revisable taste notes.
+- Every Context source is optional and independently revocable by the Listener. A sensitive local source must reduce information on-device to a minimal Context signal before the DJ sees it; raw screen text, window titles, document contents, and audio are neither sent to the model nor retained by the Station.
 
 ## Terms
 
@@ -55,6 +56,7 @@ flowchart LR
   UI -->|natural-language messages| Jobs
   Agent["DJ agent"] --> Controller
   Scheduler["Scheduler"] --> Controller
+  Context["Optional context sources"] -->|minimal context signals| Jobs
   Player["Browser player"] -->|playback events| Controller
 
   Controller --> Store["Station storage\nstate + profile + tasks + feed"]
@@ -103,6 +105,18 @@ It owns:
 - applying simple, honest result preferences: a music-first duration bias by default, an explicit duration cap when the caller asks for one, and best-effort recency when provider metadata supports it
 
 It does not own queue mutations or playback transport.
+
+### Context adapter
+
+**Interface:** turns one optional Context source into a small, purpose-specific Context signal for a bounded DJ run.
+
+It owns:
+
+- Listener-controlled source permissions and enablement
+- local reduction of sensitive device context into coarse signals such as `deep_work`, `in_meeting`, or `on_break`
+- signal freshness and source provenance
+
+It does not own musical decisions, Listener instructions, Queue mutations, or durable copies of raw surrounding content. The DJ decides whether a signal is relevant; the signal is context, never a command.
 
 ### Music-provider seam
 

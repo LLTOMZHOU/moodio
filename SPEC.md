@@ -37,6 +37,8 @@ Implementation note:
 - Host identity matters: the DJ should feel consistent and editorially intentional.
 - Live state matters: users should always understand whether the station is thinking, speaking, or playing.
 - Context should shape programming: time, mood, weather, and recent history should influence what happens next.
+- Personal means Listener intent, not a claim to out-recommend a provider: editable instructions, rituals, corrections, and current explorations complement provider catalogue and recommendation signals.
+- Context is optional and advisory: each source is Listener-controlled, and sensitive local context is reduced on-device to a minimal signal before the DJ sees it.
 - Controls should stay light: quick nudges are preferred over complex manual programming.
 - Human control wins: direct listener actions must take effect immediately and be visible to the DJ.
 - The model chooses; the runtime guarantees: the agent provides editorial judgment while typed controls protect queue and playback correctness.
@@ -202,11 +204,15 @@ The system should incorporate:
 
 - current time
 - weather
+- calendar and routine information when the Listener enables it
+- an optional coarse local work-mode signal, such as deep work, a meeting, or a break
 - recent plays
 - recent user nudges
 - routine rules
 - explicit listener instructions
 - relevant real-world music context, such as a new release by a followed artist
+
+Context sources are advisory and independently controllable. A local work-context adapter must classify on-device and provide only a minimal Context signal to the DJ; it must not send or persist raw screen text, window titles, document content, or ambient audio.
 
 ### Memory
 
